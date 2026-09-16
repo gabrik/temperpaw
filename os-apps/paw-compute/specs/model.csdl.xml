@@ -22,6 +22,7 @@
         <Property Name="SetupScript" Type="Edm.String" />
         <Property Name="LastCheckpointAt" Type="Edm.String" />
         <Property Name="ProvisionedAt" Type="Edm.String" />
+        <Property Name="ProvisionTicks" Type="Edm.Int64" />
         <Property Name="ErrorMessage" Type="Edm.String" />
         <Property Name="ToolsInstalled" Type="Edm.String" />
         <Property Name="CredentialsScoped" Type="Edm.String" />
@@ -46,6 +47,22 @@
 
         <Action Name="Provision" IsBound="true">
           <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="ProvisionCreated" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+          <Parameter Name="machine_id" Type="Edm.String" Nullable="false" />
+          <Parameter Name="sandbox_url" Type="Edm.String" Nullable="false" />
+          <Parameter Name="provision_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CheckProvision" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="ProvisionPoll" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+          <Parameter Name="provision_ticks" Type="Edm.String" Nullable="false" />
         </Action>
 
         <Action Name="ProvisionComplete" IsBound="true">

@@ -25,6 +25,10 @@ pub struct SandboxHandle {
 
 /// Resources requested when creating a sandbox.
 pub struct SandboxConfig {
+    /// Provider image reference (e.g. `tensorlake/ubuntu-minimal`). Empty
+    /// means "provider default"; Tensorlake silently accepts image-less
+    /// creates that never boot, so callers should fail fast on empty.
+    pub image: String,
     pub cpus: u32,
     pub memory_mb: u32,
     pub timeout_seconds: u32,
@@ -39,6 +43,7 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
+            image: String::new(),
             cpus: 2,
             memory_mb: 4096,
             timeout_seconds: 3600,
@@ -224,6 +229,10 @@ fn tensorlake_create_body(config: &SandboxConfig) -> Value {
         "allow_out": config.allowed_hosts,
     });
 
+    if !config.image.is_empty() {
+        body["image"] = json!(config.image);
+    }
+
     body
 }
 
@@ -388,6 +397,83 @@ pub fn sandbox_health_check(ctx: &Context, handle: &SandboxHandle) -> Result<boo
         ),
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// Termination
+// ---------------------------------------------------------------------------
+
+/// Terminate a sandbox via the provider's control plane.
+///
+/// Termination is idempotent from the caller's point of view: a sandbox that
+/// is already gone (provider answers 404) is a success, because the desired
+/// end state — no sandbox — already holds. Other HTTP failures are errors so
+/// the caller can surface them.
+pub fn sandbox_terminate(ctx: &Context, handle: &SandboxHandle) -> Result<(), String> {
+    if handle.sandbox_id.trim().is_empty() {
+        // Nothing was ever provisioned for this handle; the desired end
+        // state (no sandbox) already holds.
+        return Ok(());
+    }
+    let api_key = resolve_sandbox_api_key(ctx, &handle.provider)?;
+    let result = match handle.provider.as_str() {
+        "tensorlake" => tensorlake_terminate(ctx, &api_key, &handle.sandbox_id),
+        "modal" => modal_terminate(ctx, &api_key, &handle.sandbox_id),
+        other => Err(format!("unsupported sandbox provider: {other}")),
+    };
+    log_sandbox_observability(
+        ctx,
+        &handle.provider,
+        "terminate",
+        if result.is_ok() { "success" } else { "error" },
+        &handle.sandbox_id,
+        None,
+        None,
+        "",
+    );
+    result
+}
+
+/// 2xx: terminated. 404: already gone — terminate must be idempotent.
+fn terminate_status_is_ok(status: u16) -> bool {
+    (200..300).contains(&status) || status == 404
+}
+
+fn tensorlake_terminate_url(sandbox_id: &str) -> String {
+    format!(
+        "https://api.tensorlake.ai/sandboxes/{}",
+        url_encode(sandbox_id)
+    )
+}
+
+fn tensorlake_terminate(ctx: &Context, api_key: &str, sandbox_id: &str) -> Result<(), String> {
+    let url = tensorlake_terminate_url(sandbox_id);
+    let resp = ctx.http_call("DELETE", &url, &bearer_headers(api_key), "")?;
+    if terminate_status_is_ok(resp.status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Tensorlake sandbox termination failed (HTTP {}): {}",
+            resp.status,
+            &resp.body[..resp.body.len().min(500)]
+        ))
+    }
+}
+
+fn modal_terminate(ctx: &Context, api_key: &str, sandbox_id: &str) -> Result<(), String> {
+    let base = modal_base_url(ctx)?;
+    let params = format!("sandbox_id={}", url_encode(sandbox_id));
+    let url = modal_url(&base, "terminate", api_key, &params);
+    let resp = ctx.http_call("DELETE", &url, &[], "")?;
+    if terminate_status_is_ok(resp.status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Modal sandbox termination failed (HTTP {}): {}",
+            resp.status,
+            &resp.body[..resp.body.len().min(500)]
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -740,7 +826,15 @@ fn tensorlake_create(
         ));
     }
 
-    let parsed: Value = serde_json::from_str(&resp.body)
+    tensorlake_handle_from_response(&resp.body)
+}
+
+/// Build the sandbox handle from a Tensorlake create response. The API
+/// returns the authoritative `sandbox_url` (cluster-specific, e.g.
+/// `*.sandboxes.tensorlake.habvm.dev`); only fall back to the legacy
+/// constructed URL when the field is absent.
+fn tensorlake_handle_from_response(body: &str) -> Result<SandboxHandle, String> {
+    let parsed: Value = serde_json::from_str(body)
         .map_err(|e| format!("failed to parse Tensorlake response: {e}"))?;
     let sandbox_id = parsed
         .get("sandbox_id")
@@ -752,7 +846,12 @@ fn tensorlake_create(
                 .unwrap_or("tensorlake-sandbox")
         })
         .to_string();
-    let sandbox_url = format!("https://{sandbox_id}.sandbox.tensorlake.ai");
+    let sandbox_url = parsed
+        .get("sandbox_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("https://{sandbox_id}.sandbox.tensorlake.ai"));
 
     Ok(SandboxHandle {
         sandbox_url,
@@ -1216,6 +1315,30 @@ mod tests {
     }
 
     #[test]
+    fn test_tensorlake_terminate_url() {
+        assert_eq!(
+            tensorlake_terminate_url("sbx-abc123"),
+            "https://api.tensorlake.ai/sandboxes/sbx-abc123"
+        );
+        // Ids are URL-encoded defensively (they are provider-issued, but the
+        // value round-trips through the Computer row).
+        assert_eq!(
+            tensorlake_terminate_url("sbx abc"),
+            "https://api.tensorlake.ai/sandboxes/sbx%20abc"
+        );
+    }
+
+    #[test]
+    fn test_terminate_status_classification() {
+        // 2xx: terminated. 404: already gone — terminate must be idempotent.
+        assert!(terminate_status_is_ok(200));
+        assert!(terminate_status_is_ok(204));
+        assert!(terminate_status_is_ok(404));
+        assert!(!terminate_status_is_ok(401));
+        assert!(!terminate_status_is_ok(500));
+    }
+
+    #[test]
     fn test_resolve_modal_base_url_requires_explicit_value() {
         let configured = "https://user--temperpaw-sandbox-bridge".to_string();
         assert_eq!(
@@ -1263,8 +1386,47 @@ mod tests {
     }
 
     #[test]
+    fn test_tensorlake_handle_prefers_response_sandbox_url() {
+        let body = json!({
+            "sandbox_id": "abc123",
+            "sandbox_url": "https://abc123.sandboxes.tensorlake.habvm.dev"
+        })
+        .to_string();
+        let handle = tensorlake_handle_from_response(&body).unwrap();
+        assert_eq!(handle.sandbox_id, "abc123");
+        assert_eq!(
+            handle.sandbox_url,
+            "https://abc123.sandboxes.tensorlake.habvm.dev"
+        );
+    }
+
+    #[test]
+    fn test_tensorlake_handle_falls_back_to_constructed_url() {
+        let handle = tensorlake_handle_from_response(r#"{"id": "xyz"}"#).unwrap();
+        assert_eq!(handle.sandbox_id, "xyz");
+        assert_eq!(handle.sandbox_url, "https://xyz.sandbox.tensorlake.ai");
+    }
+
+    #[test]
+    fn test_tensorlake_create_body_includes_image_when_set() {
+        let config = SandboxConfig {
+            image: "den-dev-bookworm-dind-v4".to_string(),
+            ..SandboxConfig::default()
+        };
+        let body = tensorlake_create_body(&config);
+        assert_eq!(body["image"], json!("den-dev-bookworm-dind-v4"));
+    }
+
+    #[test]
+    fn test_tensorlake_create_body_omits_image_when_empty() {
+        let body = tensorlake_create_body(&SandboxConfig::default());
+        assert!(body.get("image").is_none());
+    }
+
+    #[test]
     fn test_tensorlake_create_body_includes_network_policy() {
         let config = SandboxConfig {
+            image: String::new(),
             cpus: 4,
             memory_mb: 8192,
             timeout_seconds: 7200,

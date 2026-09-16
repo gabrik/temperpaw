@@ -16,7 +16,15 @@ initial = "Created"
 # [[state_timeout]] declaration or a domain-specific justification
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
-allow_indefinite_states = ["Created", "Provisioning", "Ready", "Checkpointing", "Sleeping"]
+# Provisioning is tick-driven: state_timeout re-fires CheckProvision every
+# 30s until the sandbox is healthy (bounded by the module's tick budget).
+allow_indefinite_states = ["Created", "Ready", "Checkpointing", "Sleeping"]
+
+[[state_timeout]]
+state = "Provisioning"
+after_seconds = 30
+on_timeout = "CheckProvision"
+reset_on = ["ProvisionCreated", "ProvisionPoll"]
 
 # -- State variables ----------------------------------------------------------
 
@@ -122,12 +130,70 @@ to = "Created"
 params = ["name", "description", "provider", "cpu_cores", "memory_gb", "storage_gb", "base_image", "setup_script", "tools_installed", "credentials_scoped", "network_allow", "project_harness_id"]
 hint = "Set up the computer specification before provisioning."
 
+[[state]]
+name = "provision_ticks"
+type = "counter"
+initial = "0"
+
 [[action]]
 name = "Provision"
 kind = "input"
 from = ["Created"]
 to = "Provisioning"
 hint = "Start provisioning the VM."
+effect = [{ type = "trigger", name = "computer_provision" }]
+
+[[action.triggers]]
+name = "computer_provision"
+kind = "wasm"
+module = "computer_provision"
+on_failure = "ProvisionFailed"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+
+[[action]]
+name = "ProvisionCreated"
+kind = "input"
+from = ["Provisioning"]
+to = "Provisioning"
+params = ["machine_id", "sandbox_url", "provision_ticks"]
+hint = "Record the fresh sandbox handle; health polling continues on ticks."
+effect = [{ type = "set_counter_from_param", var = "provision_ticks", param = "provision_ticks" }]
+
+[[action]]
+name = "CheckProvision"
+kind = "internal"
+from = ["Provisioning"]
+to = "Provisioning"
+hint = "Poll sandbox health; run setup on first health, then complete."
+effect = [{ type = "trigger", name = "computer_provision" }]
+
+[[action.triggers]]
+name = "computer_provision"
+kind = "wasm"
+module = "computer_provision"
+on_failure = "ProvisionFailed"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+
+[[action]]
+name = "ProvisionPoll"
+kind = "input"
+from = ["Provisioning"]
+to = "Provisioning"
+params = ["provision_ticks"]
+hint = "Sandbox not healthy yet; re-arm the next poll tick."
+effect = [{ type = "set_counter_from_param", var = "provision_ticks", param = "provision_ticks" }]
 
 [[action]]
 name = "ProvisionComplete"
@@ -172,6 +238,20 @@ kind = "input"
 from = ["Sleeping"]
 to = "Provisioning"
 hint = "Wake the VM from sleep."
+effect = [{ type = "trigger", name = "computer_provision" }]
+
+[[action.triggers]]
+name = "computer_provision"
+kind = "wasm"
+module = "computer_provision"
+on_failure = "ProvisionFailed"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "Destroy"
@@ -179,6 +259,21 @@ kind = "input"
 from = ["Ready", "Sleeping", "Created"]
 to = "Destroyed"
 hint = "Permanently destroy the VM."
+effect = [{ type = "trigger", name = "computer_terminate" }]
+
+# Destroy is terminal, so the module always reports an empty callback; the
+# sandbox deletion is best-effort cleanup (failures are logged, never block).
+[[action.triggers]]
+name = "computer_terminate"
+kind = "wasm"
+module = "computer_terminate"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[invariant]]
 name = "DestroyedIsFinal"

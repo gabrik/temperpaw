@@ -18,7 +18,7 @@ copy_artifact() {
     fi
 }
 
-for module in computer_exec; do
+for module in computer_exec computer_provision computer_terminate; do
     echo "Building $module..."
     (cd "$SCRIPT_DIR/$module" && cargo build --target wasm32-unknown-unknown --release)
     copy_artifact "$module" "wasm32-unknown-unknown"

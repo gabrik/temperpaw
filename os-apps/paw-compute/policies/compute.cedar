@@ -79,7 +79,14 @@ permit(
 );
 
 // Exec: agents run commands on a computer's sandbox through the Exec entity —
-// every invocation is a Cedar-gated, audited row (ADR-0002).
+// every invocation is a Cedar-gated, audited row (ADR-0002). Admins (humans
+// operating the factory) get the same surface to observe and debug.
+permit(
+    principal is Admin,
+    action,
+    resource is Exec
+);
+
 permit(
     principal is Agent,
     action in [
@@ -168,4 +175,22 @@ permit(
     resource is Secret
 ) when {
     context.module == "computer_exec"
+};
+
+// computer_provision creates sandboxes (provider control plane) and runs the
+// setup script (provider data plane); computer_terminate deletes sandboxes.
+permit(
+    principal is Agent,
+    action == Action::"http_call",
+    resource is HttpEndpoint
+) when {
+    ["computer_provision", "computer_terminate"].contains(context.module)
+};
+
+permit(
+    principal is Agent,
+    action == Action::"access_secret",
+    resource is Secret
+) when {
+    ["computer_provision", "computer_terminate"].contains(context.module)
 };
