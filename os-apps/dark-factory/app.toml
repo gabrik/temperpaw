@@ -1,0 +1,31 @@
+name = "dark-factory"
+description = "Dark factory: an agent plans, implements, validates, publishes, merges, and observes one code change on a paw-compute Computer — two human gates, bounded repair, no external controller (ADR-0066)."
+version = "0.1.0"
+startup_install = "core"
+
+dependencies = ["paw-compute"]
+
+[[wasm_modules]]
+name = "factory_planner"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "factory_implementer"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "factory_validator"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "factory_publisher"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "factory_janitor"
+criticality = "app-required"
+startup_loading = "lazy"

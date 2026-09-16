@@ -1,0 +1,15 @@
+[package]
+name = "factory-validator"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+temper-wasm-sdk = { git = "https://github.com/nerdsane/temper.git", rev = "a747f7d40cb556371168f8460bc72806c3574d2b" }
+wasm-helpers = { path = "../../../paw-agent/wasm/wasm-helpers" }
+factory-common = { path = "../factory-common" }
+serde_json = "1"

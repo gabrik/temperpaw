@@ -1,0 +1,846 @@
+# Dark Factory — FactoryTask
+#
+# One task that an agent plans, implements, validates, publishes, merges, and
+# observes on a paw-compute Computer, with two human gates (plan approval and
+# merge approval) and bounded repair loops. Ported from the external
+# den-software-factory demo app (same 11-state machine, same fencing
+# contract) per ADR-0066, with these deliberate changes:
+#
+#   1. `sandbox_id` is gone. The task attaches 1:1 to a paw-compute Computer
+#      (`computer_id`); the Computer row holds the sandbox identity.
+#   2. The external Node controller is gone. Work is driven by WASM modules
+#      (factory_planner / factory_implementer / factory_validator /
+#      factory_publisher / factory_janitor) wired to pollable re-check
+#      actions: each working state re-fires its Check* action every 30s
+#      (state_timeout + reset_on self-loop — the spec language allows only
+#      one state_timeout per state, so the phase budget is enforced by the
+#      modules: each counts its ticks and reports ExpireTask at the bound —
+#      130 ticks (65 min) for Planning/Implementing, the Pi run budget per
+#      GB 2026-09-16; 60 for Validating/Observing; 30 for PublishingPR/
+#      Merging). A permanently broken module fails its trigger and the
+#      kernel dispatches ExpireTask via on_failure.
+#   3. `base_sha` moves from StartPlanning to SubmitPlan: the planner
+#      resolves the base commit during checkout (GitHub API or clone HEAD)
+#      and freezes it with the plan it submits.
+#
+# Fencing contract (unchanged from the den demo):
+#   - operation_key / operation_owner identify the active operation.
+#     External phase-entry actions (StartPlanning, ApprovePlan, RejectPlan,
+#     ApproveMerge, RequestChanges) take them as parameters from the caller;
+#     module-reported transitions mint a fresh pair for the next phase.
+#   - Completion actions must pass expected_operation_key /
+#     expected_operation_owner equal to the stored fields (spec-level
+#     fencing against stale reporters).
+#   - plan_digest binds ApprovePlan to the exact submitted plan;
+#     head_sha binds ApproveMerge to the exact reviewed head.
+
+[automaton]
+name = "FactoryTask"
+states = [
+  "Requested",
+  "Planning",
+  "AwaitingPlanApproval",
+  "Implementing",
+  "Validating",
+  "PublishingPR",
+  "AwaitingMergeApproval",
+  "Merging",
+  "Observing",
+  "Completed",
+  "Failed",
+]
+initial = "Requested"
+strict_action_params = true
+
+# ADR-0050 liveness coverage. Working states carry [[state_timeout]]
+# declarations below (re-check cadence + module-side phase budgets).
+# The entry state and the human-review gates legitimately wait forever:
+# nothing moves until an operator (or the console, on their behalf) acts.
+allow_indefinite_states = ["Requested", "AwaitingApproval", "AwaitingMergeApproval"]
+allow_indefinite_states = [
+  "Requested",
+  "AwaitingPlanApproval",
+  "AwaitingMergeApproval",
+]
+
+# -- State variables ----------------------------------------------------------
+
+[[state]]
+name = "task_prompt"
+type = "string"
+initial = ""
+
+[[state]]
+name = "factory_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "computer_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "base_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "plan_text"
+type = "string"
+initial = ""
+
+[[state]]
+name = "plan_digest"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repair_context"
+type = "string"
+initial = ""
+
+[[state]]
+name = "branch_name"
+type = "string"
+initial = ""
+
+[[state]]
+name = "head_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "published_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "validation_summary"
+type = "string"
+initial = ""
+
+[[state]]
+name = "pull_request_url"
+type = "string"
+initial = ""
+
+[[state]]
+name = "merge_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observation_summary"
+type = "string"
+initial = ""
+
+[[state]]
+name = "operation_key"
+type = "string"
+initial = ""
+
+[[state]]
+name = "operation_owner"
+type = "string"
+initial = ""
+
+[[state]]
+name = "operation_result"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repair_round"
+type = "counter"
+initial = "0"
+
+[[state]]
+name = "phase_ticks"
+type = "counter"
+initial = "0"
+
+[[state]]
+name = "failure_reason"
+type = "string"
+initial = ""
+
+# -- Phase 1: Planning ---------------------------------------------------------
+
+[[action]]
+name = "StartPlanning"
+kind = "input"
+from = ["Requested"]
+to = "Planning"
+params = ["task_prompt", "factory_id", "computer_id", "operation_key", "operation_owner", "phase_ticks"]
+hint = "Record the request and let factory_planner produce a plan on a Computer. computer_id may name an existing Ready computer to reuse; empty means the planner creates one."
+effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "task_prompt"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+[[action]]
+name = "CheckPlanning"
+kind = "input"
+from = ["Planning"]
+to = "Planning"
+hint = "Re-check tick for the planning phase (factory_planner). Self-loop re-arms the 30s timeout via reset_on; a not-done tick reports success with an empty callback action."
+effect = [
+  { type = "trigger", name = "factory_planner" },
+  { type = "increment", var = "phase_ticks" },
+]
+
+[[action.triggers]]
+name = "factory_planner"
+kind = "wasm"
+module = "factory_planner"
+on_failure = "ExpireTask"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+github_token = "{secret:github_token}"
+model_api_key = "{secret:anthropic_api_key}"
+pi_provider = "anthropic"
+pi_model = "claude-sonnet-4-6"
+
+[[action]]
+name = "AttachComputer"
+kind = "input"
+from = ["Planning"]
+to = "Planning"
+params = ["computer_id", "operation_result", "expected_operation_key", "expected_operation_owner"]
+hint = "Bind the planner-provisioned Computer to this task (CAS-fenced). After attachment the planner proceeds to checkout on the next tick."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "computer_id"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action]]
+name = "SubmitPlan"
+kind = "input"
+from = ["Planning"]
+to = "AwaitingPlanApproval"
+params = [
+  "plan_text",
+  "plan_digest",
+  "base_sha",
+  "operation_result",
+  "expected_operation_key",
+  "expected_operation_owner",
+]
+hint = "Submit the exact plan for the first human decision, freezing the base commit the plan was computed against."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "plan_text"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "plan_digest"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "base_sha"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action]]
+name = "ApprovePlan"
+kind = "input"
+from = ["AwaitingPlanApproval"]
+to = "Implementing"
+params = ["plan_digest", "operation_key", "operation_owner", "phase_ticks"]
+hint = "Approve only the currently submitted plan digest."
+effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "plan_digest"
+field = "plan_digest"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+[[action]]
+name = "RejectPlan"
+kind = "input"
+from = ["AwaitingPlanApproval"]
+to = "Planning"
+params = ["repair_context", "operation_key", "operation_owner", "phase_ticks"]
+effect = [{ type = "increment", var = "repair_round" }, { type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+hint = "Return human feedback to the planning agent."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "repair_context"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+# -- Phase 2: Implementation ---------------------------------------------------
+
+[[action]]
+name = "CheckImplementing"
+kind = "input"
+from = ["Implementing"]
+to = "Implementing"
+hint = "Re-check tick for the implementation phase (factory_implementer)."
+effect = [
+  { type = "trigger", name = "factory_implementer" },
+  { type = "increment", var = "phase_ticks" },
+]
+
+[[action.triggers]]
+name = "factory_implementer"
+kind = "wasm"
+module = "factory_implementer"
+on_failure = "ExpireTask"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+github_token = "{secret:github_token}"
+model_api_key = "{secret:anthropic_api_key}"
+pi_provider = "anthropic"
+pi_model = "claude-sonnet-4-6"
+
+[[action]]
+name = "SubmitImplementation"
+kind = "input"
+from = ["Implementing"]
+to = "Validating"
+params = ["base_sha", "branch_name", "head_sha", "operation_result", "expected_operation_key", "expected_operation_owner", "operation_key", "operation_owner", "phase_ticks"]
+hint = "Freeze one agent change and start independent validation. Mints the operation key for the validation phase."
+effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "branch_name"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "head_sha"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+# -- Phase 3: Validation -------------------------------------------------------
+
+[[action]]
+name = "CheckValidating"
+kind = "input"
+from = ["Validating"]
+to = "Validating"
+hint = "Re-check tick for the validation phase (factory_validator)."
+effect = [
+  { type = "trigger", name = "factory_validator" },
+  { type = "increment", var = "phase_ticks" },
+]
+
+[[action.triggers]]
+name = "factory_validator"
+kind = "wasm"
+module = "factory_validator"
+on_failure = "ExpireTask"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+
+[[action]]
+name = "ValidationPassed"
+kind = "input"
+from = ["Validating"]
+to = "PublishingPR"
+params = ["validation_summary", "operation_result", "expected_operation_key", "expected_operation_owner", "operation_key", "operation_owner", "phase_ticks"]
+hint = "Publish only a change that passed independent validation. Mints the operation key for the publish phase."
+effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "validation_summary"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+[[action]]
+name = "ValidationFailed"
+kind = "input"
+from = ["Validating"]
+to = "Implementing"
+params = ["validation_summary", "repair_context", "operation_result", "expected_operation_key", "expected_operation_owner", "operation_key", "operation_owner", "phase_ticks"]
+effect = [{ type = "increment", var = "repair_round" }, { type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+hint = "Return test evidence to the coding agent."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "repair_context"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+# -- Phase 4: Publish + merge ---------------------------------------------------
+
+[[action]]
+name = "CheckPublishing"
+kind = "input"
+from = ["PublishingPR"]
+to = "PublishingPR"
+hint = "Re-check tick for the publish phase (factory_publisher)."
+effect = [
+  { type = "trigger", name = "factory_publisher" },
+  { type = "increment", var = "phase_ticks" },
+]
+
+[[action.triggers]]
+name = "factory_publisher"
+kind = "wasm"
+module = "factory_publisher"
+on_failure = "ExpireTask"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+github_token = "{secret:github_token}"
+
+[[action]]
+name = "PublishPullRequest"
+kind = "input"
+from = ["PublishingPR"]
+to = "AwaitingMergeApproval"
+params = [
+  "pull_request_url",
+  "head_sha",
+  "published_sha",
+  "operation_result",
+  "expected_operation_key",
+  "expected_operation_owner",
+]
+hint = "Expose the validated exact head for the second human decision."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "pull_request_url"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "head_sha"
+field = "head_sha"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action]]
+name = "ApproveMerge"
+kind = "input"
+from = ["AwaitingMergeApproval"]
+to = "Merging"
+params = ["head_sha", "operation_key", "operation_owner", "phase_ticks"]
+hint = "Authorize merge of only the reviewed head SHA."
+effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "head_sha"
+field = "head_sha"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+[[action]]
+name = "RequestChanges"
+kind = "input"
+from = ["AwaitingMergeApproval"]
+to = "Implementing"
+params = ["repair_context", "operation_key", "operation_owner", "phase_ticks"]
+effect = [{ type = "increment", var = "repair_round" }, { type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+hint = "Return review comments to a fresh implementation cycle."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "repair_context"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+[[action]]
+name = "CheckMerging"
+kind = "input"
+from = ["Merging"]
+to = "Merging"
+hint = "Re-check tick for the merge phase (factory_publisher)."
+effect = [
+  { type = "trigger", name = "factory_publisher" },
+  { type = "increment", var = "phase_ticks" },
+]
+
+[[action.triggers]]
+name = "factory_publisher"
+kind = "wasm"
+module = "factory_publisher"
+on_failure = "ExpireTask"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+github_token = "{secret:github_token}"
+
+[[action]]
+name = "RecordMerged"
+kind = "input"
+from = ["Merging"]
+to = "Observing"
+params = ["merge_sha", "operation_result", "expected_operation_key", "expected_operation_owner", "operation_key", "operation_owner", "phase_ticks"]
+hint = "Observe only after the exact approved head is merged. Mints the operation key for the observation phase."
+effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "merge_sha"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+# -- Phase 5: Observation -------------------------------------------------------
+
+[[action]]
+name = "CheckObserving"
+kind = "input"
+from = ["Observing"]
+to = "Observing"
+hint = "Re-check tick for the observation phase (factory_validator)."
+effect = [
+  { type = "trigger", name = "factory_validator" },
+  { type = "increment", var = "phase_ticks" },
+]
+
+[[action.triggers]]
+name = "factory_validator"
+kind = "wasm"
+module = "factory_validator"
+on_failure = "ExpireTask"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+
+[[action]]
+name = "ObservationPassed"
+kind = "input"
+from = ["Observing"]
+to = "Completed"
+params = [
+  "observation_summary",
+  "operation_result",
+  "expected_operation_key",
+  "expected_operation_owner",
+]
+hint = "Complete after the full post-merge test suite passes."
+effect = [{ type = "trigger", name = "factory_janitor" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "observation_summary"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.triggers]]
+name = "factory_janitor"
+kind = "wasm"
+module = "factory_janitor"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ObservationFailed"
+kind = "input"
+from = ["Observing"]
+to = "Implementing"
+params = [
+  "observation_summary",
+  "repair_context",
+  "operation_result",
+  "expected_operation_key",
+  "expected_operation_owner",
+  "operation_key",
+  "operation_owner",
+]
+effect = [{ type = "increment", var = "repair_round" }]
+hint = "Create a new repair branch from the failed merged SHA."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "repair_context"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_key"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "operation_owner"
+
+# -- Failure paths --------------------------------------------------------------
+
+[[action]]
+name = "FailTask"
+kind = "input"
+from = ["Planning", "Implementing", "Validating", "PublishingPR", "Merging", "Observing"]
+to = "Failed"
+params = [
+  "failure_reason",
+  "operation_result",
+  "expected_operation_key",
+  "expected_operation_owner",
+]
+hint = "Stop after an unrecoverable module failure or exhausted repair budget."
+effect = [{ type = "trigger", name = "factory_janitor" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "failure_reason"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.triggers]]
+name = "factory_janitor"
+kind = "wasm"
+module = "factory_janitor"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ExpireTask"
+kind = "input"
+from = ["Planning", "Implementing", "Validating", "PublishingPR", "Merging", "Observing"]
+to = "Failed"
+params = ["failure_reason", "error", "integration", "operation_result"]
+hint = "System-only hard stop: a phase exceeded its time budget (state_timeout) or a module call failed (trigger on_failure). No operation fencing — the timeout cannot know the live key."
+effect = [{ type = "trigger", name = "factory_janitor" }]
+
+[[action.triggers]]
+name = "factory_janitor"
+kind = "wasm"
+module = "factory_janitor"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+# -- Re-check clocks -------------------------------------------------------------
+#
+# A self-loop re-arms a state_timeout only when the action is listed in
+# reset_on (kernel: !state_changed && reset_on.contains(action)). Each Check*
+# tick therefore re-arms its own 30s clock. The spec language allows exactly
+# one state_timeout per state, so the phase time budget is enforced inside
+# the modules (tick budget, enforced against a counter in the module's
+# sandbox marker file); a module that fails hard fails its trigger and the
+# kernel dispatches ExpireTask via on_failure.
+
+[[state_timeout]]
+state = "Planning"
+after_seconds = 30
+on_timeout = "CheckPlanning"
+reset_on = ["CheckPlanning"]
+
+[[state_timeout]]
+state = "Implementing"
+after_seconds = 30
+on_timeout = "CheckImplementing"
+reset_on = ["CheckImplementing"]
+
+[[state_timeout]]
+state = "Validating"
+after_seconds = 30
+on_timeout = "CheckValidating"
+reset_on = ["CheckValidating"]
+
+[[state_timeout]]
+state = "PublishingPR"
+after_seconds = 30
+on_timeout = "CheckPublishing"
+reset_on = ["CheckPublishing"]
+
+[[state_timeout]]
+state = "Merging"
+after_seconds = 30
+on_timeout = "CheckMerging"
+reset_on = ["CheckMerging"]
+
+[[state_timeout]]
+state = "Observing"
+after_seconds = 30
+on_timeout = "CheckObserving"
+reset_on = ["CheckObserving"]
+
+# -- Invariants -------------------------------------------------------------------
+
+[[invariant]]
+name = "CompletedIsFinal"
+when = ["Completed"]
+assert = "no_further_transitions"
+
+[[invariant]]
+name = "FailedIsFinal"
+when = ["Failed"]
+assert = "no_further_transitions"

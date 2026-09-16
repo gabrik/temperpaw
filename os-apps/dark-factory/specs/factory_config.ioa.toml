@@ -1,0 +1,171 @@
+# Dark Factory — FactoryConfig
+#
+# Config-as-entity (WebhookRoute pattern, ADR-0066 D6): one row per factory
+# target. FactoryTask.factory_id selects the row; the factory WASM modules
+# read it on every tick. Operators change behavior by editing this entity —
+# no Rust, no redeploy.
+#
+# All command lists are JSON string arrays of argv vectors, e.g.
+#   test_commands = "[\"cargo\",\"test\",\"--workspace\"]"
+# They run inside the agent worktree on the task's Computer through governed
+# Exec rows — never through a side channel.
+
+[automaton]
+name = "FactoryConfig"
+states = ["Active", "Archived"]
+initial = "Active"
+strict_action_params = true
+allow_indefinite_states = ["Active"]
+
+[[state]]
+name = "factory_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repo_url"
+type = "string"
+initial = ""
+
+[[state]]
+name = "base_branch"
+type = "string"
+initial = "main"
+
+# "api"   — checkout via the GitHub Git Data API from factory WASM (private
+#           repos; the GitHub token never reaches the Computer, ADR-0066 D7).
+# "clone" — plain `git clone` inside the sandbox (public repos only).
+[[state]]
+name = "checkout_mode"
+type = "string"
+initial = "api"
+
+# "github" — create refs/PR and merge through the GitHub API.
+# "local"  — simulate publish/merge; no GitHub credential is used at all.
+[[state]]
+name = "publish_mode"
+type = "string"
+initial = "local"
+
+[[state]]
+name = "pi_provider"
+type = "string"
+initial = "anthropic"
+
+[[state]]
+name = "pi_model"
+type = "string"
+initial = ""
+
+# Name of the environment variable the model credential is written to on the
+# Computer (chmod 600 env file, sourced by the pi invocation).
+[[state]]
+name = "model_env_var"
+type = "string"
+initial = "ANTHROPIC_API_KEY"
+
+[[state]]
+name = "test_commands"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "lint_commands"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "observation_commands"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "computer_cpu_cores"
+type = "string"
+initial = "4"
+
+[[state]]
+name = "computer_memory_gb"
+type = "string"
+initial = "8"
+
+[[state]]
+name = "computer_storage_gb"
+type = "string"
+initial = "20"
+
+[[state]]
+name = "computer_provider"
+type = "string"
+initial = "tensorlake"
+
+[[state]]
+name = "computer_image"
+type = "string"
+initial = ""
+
+[[state]]
+name = "setup_script"
+type = "string"
+initial = ""
+
+[[state]]
+name = "max_repair_rounds"
+type = "string"
+initial = "6"
+
+[[state]]
+name = "max_files_per_task"
+type = "string"
+initial = "8"
+
+[[state]]
+name = "max_lines_per_task"
+type = "string"
+initial = "400"
+
+# -- Actions -------------------------------------------------------------------
+
+[[action]]
+name = "Update"
+kind = "input"
+from = ["Active"]
+to = "Active"
+params = [
+  "repo_url",
+  "base_branch",
+  "checkout_mode",
+  "publish_mode",
+  "pi_provider",
+  "pi_model",
+  "model_env_var",
+  "test_commands",
+  "lint_commands",
+  "observation_commands",
+  "computer_cpu_cores",
+  "computer_memory_gb",
+  "computer_storage_gb",
+  "computer_provider",
+  "computer_image",
+  "setup_script",
+  "max_repair_rounds",
+  "max_files_per_task",
+  "max_lines_per_task",
+]
+hint = "Update the factory configuration. Modules read it on their next tick."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "repo_url"
+
+[[action]]
+name = "Archive"
+kind = "input"
+from = ["Active"]
+to = "Archived"
+hint = "Retire this factory configuration."
+
+[[invariant]]
+name = "ArchivedIsFinal"
+when = ["Archived"]
+assert = "no_further_transitions"

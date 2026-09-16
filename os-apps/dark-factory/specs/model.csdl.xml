@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="Temper.DarkFactory" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+
+      <EntityType Name="FactoryTask">
+        <Key>
+          <PropertyRef Name="Id" />
+        </Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false" />
+        <Property Name="Status" Type="Edm.String" Nullable="false" />
+        <Property Name="task_prompt" Type="Edm.String" Nullable="true" />
+        <Property Name="factory_id" Type="Edm.String" Nullable="true" />
+        <Property Name="computer_id" Type="Edm.String" Nullable="true" />
+        <Property Name="base_sha" Type="Edm.String" Nullable="true" />
+        <Property Name="plan_text" Type="Edm.String" Nullable="true" />
+        <Property Name="plan_digest" Type="Edm.String" Nullable="true" />
+        <Property Name="repair_context" Type="Edm.String" Nullable="true" />
+        <Property Name="branch_name" Type="Edm.String" Nullable="true" />
+        <Property Name="head_sha" Type="Edm.String" Nullable="true" />
+        <Property Name="published_sha" Type="Edm.String" Nullable="true" />
+        <Property Name="validation_summary" Type="Edm.String" Nullable="true" />
+        <Property Name="pull_request_url" Type="Edm.String" Nullable="true" />
+        <Property Name="merge_sha" Type="Edm.String" Nullable="true" />
+        <Property Name="observation_summary" Type="Edm.String" Nullable="true" />
+        <Property Name="operation_key" Type="Edm.String" Nullable="true" />
+        <Property Name="operation_owner" Type="Edm.String" Nullable="true" />
+        <Property Name="operation_result" Type="Edm.String" Nullable="true" />
+        <Property Name="repair_round" Type="Edm.Int64" Nullable="true" />
+        <Property Name="failure_reason" Type="Edm.String" Nullable="true" />
+
+        <Action Name="StartPlanning" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="task_prompt" Type="Edm.String" Nullable="false" />
+          <Parameter Name="factory_id" Type="Edm.String" />
+          <Parameter Name="computer_id" Type="Edm.String" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CheckPlanning" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+
+        <Action Name="AttachComputer" IsBound="true">
+          <Parameter Name="computer_id" Type="Edm.String" Nullable="true" />
+          <Parameter Name="operation_result" Type="Edm.String" Nullable="true" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="true" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="true" />
+          <ReturnType Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+        <Action Name="SubmitPlan" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="plan_text" Type="Edm.String" Nullable="false" />
+          <Parameter Name="plan_digest" Type="Edm.String" Nullable="false" />
+          <Parameter Name="base_sha" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+        </Action>
+
+        <Action Name="ApprovePlan" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="plan_digest" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="RejectPlan" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="repair_context" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CheckImplementing" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+
+        <Action Name="SubmitImplementation" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="base_sha" Type="Edm.String" />
+          <Parameter Name="branch_name" Type="Edm.String" Nullable="false" />
+          <Parameter Name="head_sha" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CheckValidating" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+
+        <Action Name="ValidationPassed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="validation_summary" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="ValidationFailed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="validation_summary" Type="Edm.String" />
+          <Parameter Name="repair_context" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CheckPublishing" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+
+        <Action Name="PublishPullRequest" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="pull_request_url" Type="Edm.String" Nullable="false" />
+          <Parameter Name="head_sha" Type="Edm.String" Nullable="false" />
+          <Parameter Name="published_sha" Type="Edm.String" Nullable="true" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+        </Action>
+
+        <Action Name="ApproveMerge" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="head_sha" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="RequestChanges" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="repair_context" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CheckMerging" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+
+        <Action Name="RecordMerged" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="merge_sha" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="phase_ticks" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CheckObserving" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+
+        <Action Name="ObservationPassed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="observation_summary" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+        </Action>
+
+        <Action Name="ObservationFailed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="observation_summary" Type="Edm.String" />
+          <Parameter Name="repair_context" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
+        </Action>
+
+        <Action Name="FailTask" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="failure_reason" Type="Edm.String" Nullable="false" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
+        </Action>
+
+        <Action Name="ExpireTask" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="failure_reason" Type="Edm.String" />
+          <Parameter Name="error" Type="Edm.String" />
+          <Parameter Name="integration" Type="Edm.String" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+        </Action>
+      </EntityType>
+
+      <EntityType Name="FactoryConfig">
+        <Key>
+          <PropertyRef Name="Id" />
+        </Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false" />
+        <Property Name="Status" Type="Edm.String" Nullable="false" />
+        <Property Name="factory_id" Type="Edm.String" Nullable="true" />
+        <Property Name="repo_url" Type="Edm.String" Nullable="true" />
+        <Property Name="base_branch" Type="Edm.String" Nullable="true" />
+        <Property Name="checkout_mode" Type="Edm.String" Nullable="true" />
+        <Property Name="publish_mode" Type="Edm.String" Nullable="true" />
+        <Property Name="pi_provider" Type="Edm.String" Nullable="true" />
+        <Property Name="pi_model" Type="Edm.String" Nullable="true" />
+        <Property Name="model_env_var" Type="Edm.String" Nullable="true" />
+        <Property Name="test_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="lint_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="observation_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="computer_cpu_cores" Type="Edm.String" Nullable="true" />
+        <Property Name="computer_memory_gb" Type="Edm.String" Nullable="true" />
+        <Property Name="computer_storage_gb" Type="Edm.String" Nullable="true" />
+        <Property Name="computer_provider" Type="Edm.String" Nullable="true" />
+        <Property Name="computer_image" Type="Edm.String" Nullable="true" />
+        <Property Name="setup_script" Type="Edm.String" Nullable="true" />
+        <Property Name="max_repair_rounds" Type="Edm.String" Nullable="true" />
+        <Property Name="max_files_per_task" Type="Edm.String" Nullable="true" />
+        <Property Name="max_lines_per_task" Type="Edm.String" Nullable="true" />
+
+        <Action Name="Update" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryConfig" />
+          <Parameter Name="repo_url" Type="Edm.String" Nullable="false" />
+          <Parameter Name="base_branch" Type="Edm.String" />
+          <Parameter Name="checkout_mode" Type="Edm.String" />
+          <Parameter Name="publish_mode" Type="Edm.String" />
+          <Parameter Name="pi_provider" Type="Edm.String" />
+          <Parameter Name="pi_model" Type="Edm.String" />
+          <Parameter Name="model_env_var" Type="Edm.String" />
+          <Parameter Name="test_commands" Type="Edm.String" />
+          <Parameter Name="lint_commands" Type="Edm.String" />
+          <Parameter Name="observation_commands" Type="Edm.String" />
+          <Parameter Name="computer_cpu_cores" Type="Edm.String" />
+          <Parameter Name="computer_memory_gb" Type="Edm.String" />
+          <Parameter Name="computer_storage_gb" Type="Edm.String" />
+          <Parameter Name="computer_provider" Type="Edm.String" />
+          <Parameter Name="setup_script" Type="Edm.String" />
+          <Parameter Name="max_repair_rounds" Type="Edm.String" />
+          <Parameter Name="max_files_per_task" Type="Edm.String" />
+          <Parameter Name="max_lines_per_task" Type="Edm.String" />
+        </Action>
+
+        <Action Name="Archive" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryConfig" />
+        </Action>
+      </EntityType>
+
+      <EntityContainer Name="DarkFactoryService">
+        <EntitySet Name="FactoryTasks" EntityType="Temper.DarkFactory.FactoryTask" />
+        <EntitySet Name="FactoryConfigs" EntityType="Temper.DarkFactory.FactoryConfig" />
+      </EntityContainer>
+
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>
