@@ -84,8 +84,8 @@ export function toActivityEvents(payload = {}) {
         seq: Number(row.sequence_nr ?? 0),
         level: status === "Failed" || (exitCode !== "" && exitCode !== "0") ? "warn" : "info",
         stage: status,
-        message: `${label}${suffix}`,
-        stdoutTail: fields.stdout_tail ?? "",
+        message: `${formatActivityLabel(label)}${suffix}`,
+        stdoutTail: renderExecStream(fields.stdout_tail ?? ""),
         stderrTail: fields.stderr_tail ?? "",
       };
     });
@@ -222,4 +222,71 @@ export function shouldRefreshForEvent(change) {
     return ["Run", "ReportOutput", "RunSucceeded", "RunFailed"].includes(change.action);
   }
   return false;
+}
+
+// -- Live pi stream rendering (--mode json, ADR-0068 follow-up) ----------------
+//
+// The implementer runs pi with `--mode json`, so the exec's combined log (and
+// therefore the in-flight tail, ADR-0005) is newline-delimited JSON events
+// instead of plain text. Raw JSONL in the activity feed is unreadable, so
+// each event is rendered as one compact line:
+//
+//   tool_execution_start  → "⚙ bash — cargo test"
+//   tool_execution_end    → "✓ read" / "✗ bash (error)"
+//   message_end (assistant) → the message text
+//   everything else (session/turn/message_start/token deltas/tool updates)
+//   → dropped (too noisy for a tail-based feed)
+//
+// Non-JSON lines (cargo, git, sh output) pass through untouched, and
+// malformed JSON falls back to the raw line so a truncated tail never
+// breaks rendering.
+export function formatPiEventLine(line) {
+  const trimmed = String(line ?? "").trim();
+  if (!trimmed.startsWith("{")) return line;
+  let ev;
+  try {
+    ev = JSON.parse(trimmed);
+  } catch {
+    return line;
+  }
+  switch (ev.type) {
+    case "tool_execution_start": {
+      const args = ev.args ?? {};
+      const hint = String(args.command ?? args.path ?? args.file_path ?? "").slice(0, 120);
+      return `⚙ ${ev.toolName ?? "tool"}${hint ? ` — ${hint}` : ""}`;
+    }
+    case "tool_execution_end":
+      return `${ev.isError ? "✗" : "✓"} ${ev.toolName ?? "tool"}${ev.isError ? " (error)" : ""}`;
+    case "message_end": {
+      const msg = ev.message ?? {};
+      if (msg.role !== "assistant") return null;
+      const text = (msg.content ?? [])
+        .filter((part) => part?.type === "text")
+        .map((part) => part.text ?? "")
+        .join("\n")
+        .trim();
+      return text || null;
+    }
+    default:
+      return null;
+  }
+}
+
+export function renderExecStream(text) {
+  if (!text) return text;
+  return String(text)
+    .split("\n")
+    .map(formatPiEventLine)
+    .filter((line) => line !== null && line !== "")
+    .join("\n");
+}
+
+// Exec task_descriptions carry the factory op marker for idempotency
+// ("run pi implementation agent # factory-op: <task-id>:<session>:<channel>").
+// The marker matters to the backend, not the reader — render it compactly.
+export function formatActivityLabel(label) {
+  const match = /^(.*?)\s*#\s*factory-op:\s*\S+:(\S+):(\w+)\s*$/.exec(String(label ?? ""));
+  if (!match) return label;
+  const [, head, session, channel] = match;
+  return `${head.trim()} #${channel} · ${session.slice(0, 8)}`;
 }

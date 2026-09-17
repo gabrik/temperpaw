@@ -2,7 +2,7 @@
 // These cover the OData entity-row -> view mapping, the human-gate param
 // building (CAS + op-key fencing), activity mapping from governed Execs,
 // and latest-patch selection from FactoryArtifacts. Run: node --test.
-import { describe, test } from "node:test";
+import { describe, it, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   shouldRefreshForEvent,
@@ -16,6 +16,9 @@ import {
   gateDecision,
   shortId,
   stageIndex,
+  formatPiEventLine,
+  renderExecStream,
+  formatActivityLabel,
 } from "../src/view-model.js";
 
 const taskRow = {
@@ -335,5 +338,101 @@ describe("shouldRefreshForEvent (live activity feed)", () => {
     assert.equal(shouldRefreshForEvent(null), false);
     assert.equal(shouldRefreshForEvent({}), false);
     assert.equal(shouldRefreshForEvent("state_change"), false);
+  });
+});
+
+describe("live pi stream rendering (--mode json)", () => {
+  test("passes non-JSON lines through unchanged", () => {
+    assert.equal(formatPiEventLine("test result: ok. 5 passed"), "test result: ok. 5 passed");
+    assert.equal(formatPiEventLine("   Compiling darkfactory-rust"), "   Compiling darkfactory-rust");
+  });
+
+  test("renders tool_execution_start with a command hint", () => {
+    const line = JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "cargo test" } });
+    assert.equal(formatPiEventLine(line), "⚙ bash — cargo test");
+  });
+
+  test("truncates long tool hints", () => {
+    const line = JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "x".repeat(200) } });
+    assert.equal(formatPiEventLine(line).length, "⚙ bash — ".length + 120);
+  });
+
+  test("renders tool_execution_end with error marker", () => {
+    const ok = JSON.stringify({ type: "tool_execution_end", toolName: "read", isError: false });
+    const bad = JSON.stringify({ type: "tool_execution_end", toolName: "bash", isError: true });
+    assert.equal(formatPiEventLine(ok), "✓ read");
+    assert.equal(formatPiEventLine(bad), "✗ bash (error)");
+  });
+
+  test("renders assistant message_end text; skips other roles", () => {
+    const line = JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Plan ready" }] } });
+    assert.equal(formatPiEventLine(line), "Plan ready");
+    const user = JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } });
+    assert.equal(formatPiEventLine(user), null);
+  });
+
+  test("skips noisy deltas and lifecycle events", () => {
+    for (const ev of [
+      { type: "session", id: "1" },
+      { type: "agent_start" },
+      { type: "agent_end" },
+      { type: "turn_start" },
+      { type: "turn_end" },
+      { type: "message_start", message: {} },
+      { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "x" } },
+      { type: "tool_execution_update", toolName: "bash" },
+    ]) {
+      assert.equal(formatPiEventLine(JSON.stringify(ev)), null, ev.type);
+    }
+  });
+
+  test("falls back to the raw line for malformed JSON", () => {
+    assert.equal(formatPiEventLine('{"type":"tool_exec'), '{"type":"tool_exec');
+  });
+
+  test("renderExecStream keeps cargo output, renders pi events, preserves order", () => {
+    const input = [
+      "   Compiling darkfactory-rust v0.1.0",
+      JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "cargo test" } }),
+      JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "tok" } }),
+      "test result: ok. 15 passed",
+    ].join("\n");
+    assert.equal(
+      renderExecStream(input),
+      ["   Compiling darkfactory-rust v0.1.0", "⚙ bash — cargo test", "test result: ok. 15 passed"].join("\n"),
+    );
+  });
+
+  test("renderExecStream passes empty input through", () => {
+    assert.equal(renderExecStream(""), "");
+  });
+});
+
+describe("activity label formatting", () => {
+  test("strips the factory-op marker to channel + short session", () => {
+    assert.equal(
+      formatActivityLabel("run pi implementation agent # factory-op: en-01a0aeee-cd2a:65a45671-94aa-4eb1:implement"),
+      "run pi implementation agent #implement · 65a45671",
+    );
+  });
+
+  test("leaves labels without a marker untouched", () => {
+    assert.equal(formatActivityLabel("dark-factory checkout"), "dark-factory checkout");
+  });
+
+  test("toActivityEvents applies label and stream rendering", () => {
+    const events = toActivityEvents({
+      value: [{
+        entity_id: "en-exec-1",
+        sequence_nr: 1,
+        fields: {
+          Status: "Running",
+          task_description: "run pi implementation agent # factory-op: en-t1:sid12345-abcdef:implement",
+          stdout_tail: JSON.stringify({ type: "tool_execution_start", toolName: "write", args: { path: "src/lib.rs" } }),
+        },
+      }],
+    });
+    assert.equal(events[0].message, "run pi implementation agent #implement · sid12345");
+    assert.equal(events[0].stdoutTail, "⚙ write — src/lib.rs");
   });
 });

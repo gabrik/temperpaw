@@ -139,7 +139,7 @@ fn plan_command(provider: &str, model: &str, session_id: &str) -> String {
          command -v pi >/dev/null 2>&1 || {{ echo 'pi still not installed after wait'; exit 127; }}; \
          cd {REPO_WORKDIR} && set -a && . {ENV_PATH} && set +a && \
          pi --provider {provider} --model {model} --session-id {session_id} \
-         --print --tools read,grep,find,ls \"$(cat {PROMPT_PATH})\" > {PLAN_PATH}"
+         --print --tools read,grep,find,ls \"$(cat {PROMPT_PATH})\" > {PLAN_PATH} && cat {PLAN_PATH}"
     )
 }
 
@@ -633,6 +633,15 @@ mod tests {
         assert!(cmd.contains("> /work/plan.md"), "{cmd}");
         assert!(cmd.contains(". /run/factory/env"), "{cmd}");
         assert!(!cmd.contains("sk-"), "{cmd}");
+    }
+
+    #[test]
+    fn plan_command_echoes_plan_into_exec_log() {
+        // The plan text must still land in /work/plan.md (CAS digest input),
+        // but it should ALSO reach the exec's combined log so the console
+        // activity feed can show it — a bare redirect hides it entirely.
+        let cmd = plan_command("anthropic", "claude-sonnet-4-6", "sid-1");
+        assert!(cmd.contains("> /work/plan.md && cat /work/plan.md"), "{cmd}");
     }
 
     #[test]

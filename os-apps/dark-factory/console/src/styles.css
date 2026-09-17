@@ -236,7 +236,9 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-panel { overflow: hidden; }
 .log-count { color: var(--dim); font-size: 9px; }
 .log-viewport { height: 280px; overflow: auto; background: #0c0a0e; padding: 10px 0; font-family: "SFMono-Regular", Consolas, monospace; }
-.log-line { display: grid; grid-template-columns: 70px 92px minmax(0, 1fr); gap: 8px; padding: 4px 14px; color: #9c96a2; font-size: 9px; line-height: 1.5; }
+.log-line { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; padding: 4px 14px; color: #9c96a2; font-size: 10px; line-height: 1.5; }
+/* The current Activity markup is stage + message (no timestamp cell). */
+.log-line > .log-details { grid-column: 1 / -1; min-width: 0; }
 .log-line:hover { background: rgba(255, 255, 255, 0.02); }
 .log-line time { color: #514c56; }
 .log-stage { overflow: hidden; color: #81798b; text-overflow: ellipsis; text-transform: uppercase; }
@@ -308,7 +310,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .decision-banner { padding: 16px; }
   .decision-actions { flex-direction: column-reverse; }
   .decision-actions .button { width: 100%; }
-  .log-line { grid-template-columns: 58px 65px minmax(0, 1fr); padding-inline: 10px; }
+  .log-line { grid-template-columns: 65px minmax(0, 1fr); padding-inline: 10px; }
   .new-request-shell { padding: 42px 16px 80px; }
   .new-request-copy h1 { font-size: 38px; }
   .request-footer { align-items: flex-start; flex-direction: column; }
@@ -364,10 +366,15 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Exec output tails (expandable per line). */
 .log-details { width: 100%; }
 .log-details summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1em 92px minmax(0, 1fr);
   gap: 0.75em;
   cursor: pointer;
   list-style: none;
+}
+.log-details summary > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .log-details summary { grid-template-columns: 1em 65px minmax(0, 1fr); }
 }
 .log-details summary::-webkit-details-marker { display: none; }
 .log-details summary::before {

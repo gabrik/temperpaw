@@ -138,7 +138,7 @@ fn implement_command(pi_provider: &str, pi_model: &str, session_id: &str) -> Str
          command -v pi >/dev/null 2>&1 || {{ echo 'pi still not installed after wait'; exit 127; }}; \
          cd {REPO_WORKDIR} && set -a && . {ENV_PATH} && set +a && \
          pi --provider {pi_provider} --model {pi_model} --session-id {session_id} \
-         --approve --print \"$(cat {PROMPT_PATH})\""
+         --approve --mode json --print \"$(cat {PROMPT_PATH})\""
     )
 }
 
@@ -496,6 +496,16 @@ mod tests {
         assert!(cmd.contains("--session-id s1"));
         assert!(cmd.contains("$(cat /work/factory-prompt.md)"));
         assert!(!cmd.contains("ANTHROPIC_API_KEY="), "secret must not be inline");
+    }
+
+    #[test]
+    fn implement_command_streams_json_events_for_live_tails() {
+        // `--mode json` makes pi emit every session event (tool calls,
+        // messages) as JSONL on stdout even when piped — without it pi is
+        // silent until the final message, leaving the in-flight tail
+        // (ADR-0005) and the console activity feed with nothing to show.
+        let cmd = implement_command("anthropic", "claude-sonnet-4-6", "s1");
+        assert!(cmd.contains("--mode json"), "{cmd}");
     }
 
     #[test]
