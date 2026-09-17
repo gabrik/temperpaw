@@ -13,6 +13,85 @@ PublishingPR → AwaitingMergeApproval → Deploying → Observing →
 FinalizingMerge → Completed   (Failed from anywhere, with failure_reason)
 ```
 
+## How a task flows
+
+Every box below is a `FactoryTask` state; every arrow is a spec action. Logic
+lives in WASM **effects** wired on the re-check ticks — one module per phase —
+and everything an effect executes runs inside the task's sandboxed Computer:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Requested : task submitted (console / API)
+    Requested --> Planning : StartPlanning
+
+    Planning --> AwaitingPlanApproval : plan artifact ready
+    note right of Planning
+        effect: factory_planner
+        · provisions the Computer (sandbox) on the first tick
+        · pins the FactoryRepo profile (revision + digest)
+        · runs pi in the sandbox to draft the plan
+    end note
+
+    AwaitingPlanApproval --> Implementing : GATE 1 · human approves plan
+    note right of Implementing
+        effect: factory_implementer
+        · pi edits code in the sandbox and commits
+    end note
+
+    Implementing --> Validating : patch committed
+    Validating --> Implementing : gate failed → repair loop
+    Validating --> PublishingPR : build + validation pass
+    note right of Validating
+        effect: factory_validator
+        · runs build_commands && validation_commands
+          (CommandSpec argv arrays) in the sandbox
+        · failures loop back to Implementing
+          (repair_round ≤ max_repair_rounds)
+    end note
+
+    PublishingPR --> AwaitingMergeApproval : PR opened
+    note right of PublishingPR
+        effect: factory_publisher
+        · pushes the branch and opens the PR (GitHub)
+    end note
+
+    AwaitingMergeApproval --> Deploying : GATE 2 · human approves head SHA
+    Deploying --> Observing : deploy_commands pass
+    note right of Deploying
+        effect: factory_deployer
+        · runs deploy_commands ([] = explicit passthrough)
+    end note
+
+    Observing --> Implementing : observation failed → repair loop
+    Observing --> FinalizingMerge : observation passed
+    note right of Observing
+        effect: factory_validator
+        · runs observation_commands against the approved head
+    end note
+
+    FinalizingMerge --> Completed : auto · PR merged / manual · handoff banner
+    note right of FinalizingMerge
+        effect: factory_publisher
+        · merge_mode=auto → merges the PR (GitHub)
+        · merge_mode=manual → no merge call; the console shows
+          a banner telling the human to merge (ADR-0070)
+    end note
+
+    state "Failed (from any state, with failure_reason)" as Failed
+    Completed --> [*]
+    Failed --> [*]
+    note left of Failed
+        sandbox lifecycle: the Computer is provisioned at the first
+        Planning tick, hosts every agent run and CommandSpec exec,
+        and is terminated by the factory_janitor effect when the task
+        reaches a terminal state (Completed / Failed / Expired)
+    end note
+```
+
+The audit test holds: you can reconstruct any run from entity state
+transitions alone (`/tdata/FactoryTasks('<id>')/events`) — no logic hides in
+imperative orchestration code.
+
 ## Quick start (everything, one command)
 
 From the temperpaw repo root:
@@ -129,7 +208,12 @@ Profiles are declarative JSON in `scripts/profiles/*.json`:
 A profile declares `git_url`, `base_branch`, `checkout_mode`,
 `validation_commands` / `build_commands` / `preparation_commands` /
 `deploy_commands` / `observation_commands` (typed CommandSpec arrays),
-Pi + Computer defaults, and budgets. To onboard a new repository, add a JSON
+Pi + Computer defaults, and budgets. It also declares **merge authority**
+(`merge_mode`, ADR-0070): `"auto"` merges the reviewed PR on GitHub after
+observation passes; `"manual"` completes the task with
+`merge_disposition=manual` and the console shows a banner telling you to
+merge the PR yourself (no new gate — `den` ships manual, `dark-factory-e2e`
+ships auto). To onboard a new repository, add a JSON
 file and run the seeder on it. Re-running after an edit bumps
 `profile_revision` and updates the digest; unchanged content is a no-op.
 
@@ -200,4 +284,5 @@ lsof -ti:3100 | xargs kill; bash scripts/boot-e2e-3100.sh
 - **ADR-0067** — console (no BFF, direct OData)
 - **ADR-0068** — live activity feed (SSE)
 - **ADR-0069** — FactoryRepo profiles (pinning, digest rule, command contracts)
+- **ADR-0070** — merge_mode: manual merge authority (handoff + console banner)
 - Proofs: `.proofs/` (e2e evidence per ADR)
