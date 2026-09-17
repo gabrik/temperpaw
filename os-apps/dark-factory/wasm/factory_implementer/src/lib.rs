@@ -142,11 +142,19 @@ fn implement_command(pi_provider: &str, pi_model: &str, session_id: &str) -> Str
 /// Step 3 exec: commit the agent's work, materialise the diff, print head.
 /// Fails (non-zero) when the agent produced no changes — an empty patch can
 /// never become a PR (mirrors DEN's "Pi completed without changing DEN").
+/// The diff is ROOT..HEAD (cumulative vs the original checkout), NOT
+/// HEAD~1..HEAD: repair rounds stack another base+implement commit pair on
+/// the persisted sandbox git, and a last-commit diff silently drops earlier
+/// rounds' files from the published tree (found live in e2e: a fix-forward
+/// PR contained only the round-1 delta). The publisher replays this
+/// cumulative diff onto base_tree=base_sha, so root..head is correct for
+/// every round shape (fresh sandbox or persisted).
 fn extract_command() -> String {
     format!(
         "cd {REPO_WORKDIR} && git add -A && git {GIT_IDENTITY} commit -qm implement --allow-empty && \
-         git diff --binary HEAD~1 HEAD > {PATCH_PATH} && test -s {PATCH_PATH} && \
-         git diff --name-status HEAD~1 HEAD > /work/changed-files.txt && git rev-parse HEAD"
+         BASE=$(git rev-list --max-parents=0 HEAD) && \
+         git diff --binary $BASE HEAD > {PATCH_PATH} && test -s {PATCH_PATH} && \
+         git diff --name-status $BASE HEAD > /work/changed-files.txt && git rev-parse HEAD"
     )
 }
 
@@ -171,7 +179,15 @@ fn implement_prompt(task_prompt: &str, plan_text: &str, repair_context: &str) ->
 }
 
 /// Branch name for the task's PR (DEN: darkfactory/<id16>-r<round>).
-fn branch_name(task_id: &str, repair_round: u64) -> String {
+/// DEN parity (factory-controller `implement()`): pre-deploy repairs
+/// (RequestChanges / ValidationFailed — merge_sha still empty) reuse the
+/// existing branch so the publisher force-updates the same ref and reuses
+/// the same open PR; post-deploy repairs (ObservationFailed — merge_sha is
+/// set) mint a fresh -r<round> branch.
+fn branch_name(task_id: &str, repair_round: u64, existing: &str, merge_sha: &str) -> String {
+    if !existing.is_empty() && merge_sha.is_empty() {
+        return existing.to_string();
+    }
     let short: String = task_id.chars().filter(|c| c.is_alphanumeric()).take(16).collect();
     format!("darkfactory/{short}-r{repair_round}")
 }
@@ -195,7 +211,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         // Post-merge repair loops re-base on the merged SHA so the repair
         // branch starts from the exact merged content (ADR-0066 phase 6).
         let merge_sha = field_or(&fields, "merge_sha", "");
-        let checkout_sha = if merge_sha.is_empty() { base_sha.clone() } else { merge_sha };
+        let checkout_sha = if merge_sha.is_empty() { base_sha.clone() } else { merge_sha.clone() };
         let phase_ticks = counter(&counters, "phase_ticks");
         let repair_round = counter(&counters, "repair_round");
 
@@ -315,7 +331,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     "SubmitImplementation",
                     &json!({
                         "base_sha": base_sha,
-                        "branch_name": branch_name(&task_id, repair_round),
+                        "branch_name": branch_name(&task_id, repair_round, &field_or(&fields, "branch_name", ""), &merge_sha),
                         "head_sha": head_sha,
                         "operation_result": "implementation complete",
                         "expected_operation_key": operation_key,
@@ -470,6 +486,10 @@ mod tests {
         assert!(cmd.contains("test -s /work/changes.patch"));
         assert!(cmd.contains("git rev-parse HEAD"));
         assert!(cmd.contains("/work/changed-files.txt"), "{cmd}");
+        // Cumulative diff vs the checkout root, not HEAD~1: repair rounds
+        // stack commits, and HEAD~1 would drop earlier rounds' files.
+        assert!(cmd.contains("git rev-list --max-parents=0 HEAD"), "{cmd}");
+        assert!(!cmd.contains("HEAD~1"), "{cmd}");
     }
 
     #[test]
@@ -485,8 +505,27 @@ mod tests {
 
     #[test]
     fn branch_names_follow_den_pattern() {
+        // First implementation: no existing branch -> mint -r0.
         assert_eq!(
-            branch_name("en-01a0aa9c-fba4-7b63", 2),
+            branch_name("en-01a0aa9c-fba4-7b63", 0, "", ""),
+            "darkfactory/en01a0aa9cfba47b-r0"
+        );
+        // Pre-deploy repairs (RequestChanges, ValidationFailed: merge_sha is
+        // empty) KEEP the existing branch so the publisher force-updates it
+        // and reuses the same open PR (DEN factory-controller implement()).
+        assert_eq!(
+            branch_name("en-01a0aa9c-fba4-7b63", 2, "darkfactory/en01a0aa9cfba47b-r0", ""),
+            "darkfactory/en01a0aa9cfba47b-r0"
+        );
+        // Post-deploy repairs (ObservationFailed: merge_sha set) get a fresh
+        // -r<round> branch, like DEN's post-merge repair loop.
+        assert_eq!(
+            branch_name("en-01a0aa9c-fba4-7b63", 2, "darkfactory/en01a0aa9cfba47b-r0", "abc123"),
+            "darkfactory/en01a0aa9cfba47b-r2"
+        );
+        // Post-deploy with no existing branch still mints -r<round>.
+        assert_eq!(
+            branch_name("en-01a0aa9c-fba4-7b63", 2, "", "abc123"),
             "darkfactory/en01a0aa9cfba47b-r2"
         );
     }

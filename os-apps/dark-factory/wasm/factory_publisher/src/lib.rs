@@ -17,9 +17,20 @@
 //!   `local://dark-factory/<branch>` URL so the flow (and the human merge
 //!   gate) still works against the sandbox-only change.
 //!
-//! Reports `PublishPullRequest` with the CAS pair. Text files only in v1 —
-//! a non-UTF-8 changed file fails loudly with its path (same rule as the
-//! checkout).
+//! Reports `PublishPullRequest` with the CAS pair. At publish time the full
+//! `/work/changes.patch` text is also recorded as a `FactoryArtifact`
+//! (kind="patch") so the console diff pane works without a sidecar store
+//! (ADR-0067 D8); artifact create is best-effort and never fails a publish.
+//!
+//! Merge ordering (ADR-0067 D7, observe-before-merge): the `Merging` phase
+//! only RECORDS the deployed approved head (`RecordMerged` with
+//! merge_sha = head_sha; the PR stays open). The actual GitHub merge runs in
+//! the `FinalizingMerge` phase — entered only after observation passes —
+//! and reports `MergeFinalized` with the real merge commit SHA. In local
+//! mode FinalizingMerge reports merge_commit_sha = merge_sha immediately.
+//!
+//! Text files only in v1 — a non-UTF-8 changed file fails loudly with its
+//! path (same rule as the checkout).
 
 use serde_json::{json, Value};
 use temper_wasm_sdk::prelude::*;
@@ -179,14 +190,39 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     );
 
     if status == "Merging" {
-        return run_merge_tick(
+        // ADR-0067 D7: deploy-record only. The PR stays OPEN; the GitHub
+        // merge runs in FinalizingMerge after observation passes.
+        let short_head = factory_common::truncate(&head_sha, 12);
+        let result = if publish_mode == "github" {
+            format!("deployed approved head {short_head}; the PR stays open until observation passes")
+        } else {
+            format!("simulated merge/deploy of approved head {short_head}")
+        };
+        set_success_result(
+            "RecordMerged",
+            &deploy_record_params(
+                &task_id,
+                &head_sha,
+                &result,
+                repair_round,
+                phase_ticks,
+                &operation_key,
+                &operation_owner,
+            ),
+        );
+        return Ok(());
+    }
+
+    if status == "FinalizingMerge" {
+        let merge_sha = field_or(fields, "merge_sha", "");
+        return run_finalize_tick(
             ctx,
             &task_id,
             &pull_request_url,
             &head_sha,
+            &merge_sha,
             &publish_mode,
             phase_ticks,
-            repair_round,
             &operation_key,
             &operation_owner,
         );
@@ -194,6 +230,16 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
 
     match decide_tick(&publish_mode, phase_ticks) {
         TickDecision::PublishLocal => {
+            // D8: best-effort patch artifact from the sandbox.
+            let patch = factory_common::get_entity(ctx, "Computers", &computer_id, fields)
+                .and_then(|computer| {
+                    factory_common::computer_sandbox_handle(
+                        computer.get("fields").unwrap_or(&json!({})),
+                    )
+                })
+                .and_then(|handle| sandbox_file_read(ctx, &handle, PATCH_PATH))
+                .unwrap_or_default();
+            record_patch_artifact(ctx, fields, &task_id, repair_round, &patch);
             report_publish(
                 &local_pr_url(&branch_name),
                 &head_sha,
@@ -349,6 +395,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
                 "info",
                 &format!("factory_publisher: task {task_id} published {branch_name} ({commit_sha}) -> {pr_url}"),
             );
+            record_patch_artifact(ctx, fields, &task_id, repair_round, &patch);
             report_publish(&pr_url, &head_sha, &commit_sha, &operation_key, &operation_owner);
         }
         TickDecision::Fail(reason) => {
@@ -387,6 +434,46 @@ fn report_publish(
     );
 }
 
+/// D8: best-effort FactoryArtifact create — the PR/local URL is the
+/// primary artifact; a store hiccup must not fail the publish.
+fn record_patch_artifact(
+    ctx: &Context,
+    fields: &Value,
+    task_id: &str,
+    repair_round: u64,
+    patch: &str,
+) {
+    if patch.is_empty() {
+        ctx.log(
+            "info",
+            &format!("factory_publisher: task {task_id} has no patch content; skipping artifact"),
+        );
+        return;
+    }
+    let body = patch_artifact_body(task_id, repair_round, patch);
+    match factory_common::create_entity(ctx, "FactoryArtifacts", &body, fields) {
+        Ok(_) => ctx.log(
+            "info",
+            &format!("factory_publisher: task {task_id} recorded patch artifact changes-r{repair_round}.patch"),
+        ),
+        Err(e) => ctx.log(
+            "error",
+            &format!("factory_publisher: task {task_id} patch artifact create failed (continuing): {e}"),
+        ),
+    }
+}
+
+/// Body of the kind="patch" FactoryArtifact (ADR-0067 D8).
+fn patch_artifact_body(task_id: &str, repair_round: u64, patch: &str) -> Value {
+    json!({
+        "task_id": task_id,
+        "kind": "patch",
+        "name": format!("changes-r{repair_round}.patch"),
+        "content": patch,
+        "created_by": "factory_publisher",
+    })
+}
+
 /// Extract the PR number from a pull_request_url (".../pull/123").
 fn pr_number_from_url(url: &str) -> Result<u64, String> {
     url.rsplit("/pull/")
@@ -396,15 +483,17 @@ fn pr_number_from_url(url: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("cannot parse PR number from '{url}'"))
 }
 
-/// Merging-phase tick: the human approved the exact head; merge the PR.
-fn run_merge_tick(
+/// FinalizingMerge-phase tick (ADR-0067 D7): observation passed on the
+/// deployed head; now perform the actual GitHub merge and report
+/// `MergeFinalized` with the real merge commit SHA.
+fn run_finalize_tick(
     ctx: &Context,
     task_id: &str,
     pull_request_url: &str,
     head_sha: &str,
+    merge_sha: &str,
     publish_mode: &str,
     phase_ticks: u64,
-    repair_round: u64,
     operation_key: &str,
     operation_owner: &str,
 ) -> Result<(), String> {
@@ -412,7 +501,7 @@ fn run_merge_tick(
         set_success_result(
             "FailTask",
             &json!({
-                "failure_reason": format!("merge exceeded {MAX_PUBLISH_TICKS} ticks"),
+                "failure_reason": format!("finalize-merge exceeded {MAX_PUBLISH_TICKS} ticks"),
                 "operation_result": "failed",
                 "expected_operation_key": operation_key,
                 "expected_operation_owner": operation_owner,
@@ -421,9 +510,23 @@ fn run_merge_tick(
         return Ok(());
     }
 
-    // Local mode: nothing to merge server-side; the sandbox head is the merge.
+    // Local mode: nothing to merge server-side; the deployed (observed) head
+    // is the final commit.
     if publish_mode != "github" || pull_request_url.starts_with("local://") {
-        report_merged(task_id, head_sha, repair_round, phase_ticks, operation_key, operation_owner);
+        let final_sha = if merge_sha.is_empty() { head_sha } else { merge_sha };
+        ctx.log(
+            "info",
+            &format!("factory_publisher: task {task_id} local finalize: merge_commit_sha = {final_sha}"),
+        );
+        set_success_result(
+            "MergeFinalized",
+            &finalize_params(
+                final_sha,
+                "merged (local): merge_commit_sha = observed head",
+                operation_key,
+                operation_owner,
+            ),
+        );
         return Ok(());
     }
 
@@ -440,7 +543,7 @@ fn run_merge_tick(
     let pr_number = pr_number_from_url(pull_request_url)?;
 
     // Idempotency: if the PR is already merged (retry after a crash between
-    // the merge call and RecordMerged), reuse its merge_commit_sha.
+    // the merge call and MergeFinalized), reuse its merge_commit_sha.
     let published_sha = ctx
         .entity_state
         .get("fields")
@@ -450,12 +553,15 @@ fn run_merge_tick(
         .to_string();
     let pr = factory_common::github_api(ctx, "GET", &format!("/repos/{slug}/pulls/{pr_number}"), None)?;
     if pr.get("merged").and_then(|v| v.as_bool()) == Some(true) {
-        let merge_sha = pr
+        let merge_commit = pr
             .get("merge_commit_sha")
             .and_then(|v| v.as_str())
             .ok_or("merged PR carried no merge_commit_sha")?;
-        ctx.log("info", &format!("factory_publisher: task {task_id} PR #{pr_number} already merged as {merge_sha}"));
-        report_merged(task_id, merge_sha, repair_round, phase_ticks, operation_key, operation_owner);
+        ctx.log("info", &format!("factory_publisher: task {task_id} PR #{pr_number} already merged as {merge_commit}"));
+        set_success_result(
+            "MergeFinalized",
+            &finalize_params(merge_commit, "merged", operation_key, operation_owner),
+        );
         return Ok(());
     }
 
@@ -493,12 +599,15 @@ fn run_merge_tick(
     );
     match merge {
         Ok(v) if v.get("merged").and_then(|m| m.as_bool()) == Some(true) => {
-            let merge_sha = v
+            let merge_commit = v
                 .get("sha")
                 .and_then(|m| m.as_str())
                 .ok_or("github merge response carried no sha")?;
-            ctx.log("info", &format!("factory_publisher: task {task_id} merged PR #{pr_number} as {merge_sha}"));
-            report_merged(task_id, merge_sha, repair_round, phase_ticks, operation_key, operation_owner);
+            ctx.log("info", &format!("factory_publisher: task {task_id} merged PR #{pr_number} as {merge_commit}"));
+            set_success_result(
+                "MergeFinalized",
+                &finalize_params(merge_commit, "merged", operation_key, operation_owner),
+            );
         }
         Ok(v) => {
             ctx.log("info", &format!("factory_publisher: task {task_id} merge not complete yet: {}", factory_common::truncate(&v.to_string(), 200)));
@@ -514,27 +623,43 @@ fn run_merge_tick(
     Ok(())
 }
 
-/// Report RecordMerged via the result envelope (mints the observation key).
-fn report_merged(
+/// RecordMerged params (Merging phase): pins the deployed approved head as
+/// merge_sha and mints the operation key for the observation phase. No
+/// GitHub calls happen in this phase (ADR-0067 D7).
+fn deploy_record_params(
     task_id: &str,
-    merge_sha: &str,
+    head_sha: &str,
+    operation_result: &str,
     repair_round: u64,
     phase_ticks: u64,
-    operation_key: &str,
-    operation_owner: &str,
-) {
-    set_success_result(
-        "RecordMerged",
-        &json!({
-            "merge_sha": merge_sha,
-            "operation_result": "merged",
-            "expected_operation_key": operation_key,
-            "expected_operation_owner": operation_owner,
-            "operation_key": factory_common::mint_operation_key(task_id, "observe", repair_round, phase_ticks),
-            "operation_owner": "factory_publisher",
-            "phase_ticks": 0,
-        }),
-    );
+    expected_operation_key: &str,
+    expected_operation_owner: &str,
+) -> Value {
+    json!({
+        "merge_sha": head_sha,
+        "operation_result": operation_result,
+        "expected_operation_key": expected_operation_key,
+        "expected_operation_owner": expected_operation_owner,
+        "operation_key": factory_common::mint_operation_key(task_id, "observe", repair_round, phase_ticks),
+        "operation_owner": "factory_publisher",
+        "phase_ticks": 0,
+    })
+}
+
+/// MergeFinalized params (FinalizingMerge phase): the real merge commit
+/// SHA plus the operation fences. Terminal — no fresh key is minted.
+fn finalize_params(
+    merge_commit_sha: &str,
+    operation_result: &str,
+    expected_operation_key: &str,
+    expected_operation_owner: &str,
+) -> Value {
+    json!({
+        "merge_commit_sha": merge_commit_sha,
+        "operation_result": operation_result,
+        "expected_operation_key": expected_operation_key,
+        "expected_operation_owner": expected_operation_owner,
+    })
 }
 
 // ===========================================================================
@@ -599,6 +724,43 @@ mod tests {
         );
         assert!(pr_number_from_url("local://dark-factory/x").is_err());
         assert!(pr_number_from_url("https://github.com/o/r").is_err());
+    }
+
+    #[test]
+    fn deploy_record_pins_approved_head_and_mints_observe_key() {
+        let p = deploy_record_params("task-1", "head123", "deployed approved head", 2, 7, "key-m", "owner-m");
+        assert_eq!(p["merge_sha"], "head123");
+        assert_eq!(p["operation_result"], "deployed approved head");
+        assert_eq!(p["expected_operation_key"], "key-m");
+        assert_eq!(p["expected_operation_owner"], "owner-m");
+        assert_eq!(p["operation_owner"], "factory_publisher");
+        assert!(
+            p["operation_key"].as_str().unwrap().contains("task-1:observe:r2:t"),
+            "{}", p["operation_key"]
+        );
+        assert_eq!(p["phase_ticks"], 0);
+    }
+
+    #[test]
+    fn finalize_params_carry_merge_commit_and_fences_only() {
+        let p = finalize_params("mc999", "merged", "key-f", "owner-f");
+        assert_eq!(p["merge_commit_sha"], "mc999");
+        assert_eq!(p["operation_result"], "merged");
+        assert_eq!(p["expected_operation_key"], "key-f");
+        assert_eq!(p["expected_operation_owner"], "owner-f");
+        // Terminal: no fresh operation key is minted past Completed.
+        assert!(p.get("operation_key").is_none());
+        assert!(p.get("phase_ticks").is_none());
+    }
+
+    #[test]
+    fn patch_artifact_body_shapes_d8_entity() {
+        let a = patch_artifact_body("task-7", 3, "diff --git a/x b/x");
+        assert_eq!(a["task_id"], "task-7");
+        assert_eq!(a["kind"], "patch");
+        assert_eq!(a["name"], "changes-r3.patch");
+        assert_eq!(a["content"], "diff --git a/x b/x");
+        assert_eq!(a["created_by"], "factory_publisher");
     }
 
     #[test]

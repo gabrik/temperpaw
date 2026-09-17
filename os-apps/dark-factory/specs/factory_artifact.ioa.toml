@@ -1,0 +1,48 @@
+# Dark Factory — FactoryArtifact (ADR-0067 D8)
+#
+# Append-only artifact store for task outputs that should be readable via
+# OData without a sidecar store: the publisher records kind="patch" (full
+# /work/changes.patch text) at publish time; the console diff pane reads
+# artifacts filtered by task_id + kind. Entities are created by factory WASM
+# modules through loopback entity create (same mechanism the planner uses to
+# create its Computer) and by humans for ad-hoc notes.
+#
+# Deliberately actionless: artifacts are immutable once recorded. A repair
+# round records a NEW artifact (name carries the round), never mutates.
+
+[automaton]
+name = "FactoryArtifact"
+states = ["Recorded"]
+initial = "Recorded"
+strict_action_params = true
+allow_indefinite_states = ["Recorded"]
+
+# Id of the FactoryTask this artifact belongs to (no cross-entity
+# constraint: artifacts must be creatable before/after any task state).
+[[state]]
+name = "task_id"
+type = "string"
+initial = ""
+
+# "patch" — full unified diff of the published change.
+# "plan"  — reserved for plan snapshots.
+[[state]]
+name = "kind"
+type = "string"
+initial = ""
+
+# Human-readable label, e.g. "changes-r0.patch".
+[[state]]
+name = "name"
+type = "string"
+initial = ""
+
+[[state]]
+name = "content"
+type = "string"
+initial = ""
+
+[[state]]
+name = "created_by"
+type = "string"
+initial = ""

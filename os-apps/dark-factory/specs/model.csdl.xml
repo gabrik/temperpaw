@@ -22,6 +22,7 @@
         <Property Name="validation_summary" Type="Edm.String" Nullable="true" />
         <Property Name="pull_request_url" Type="Edm.String" Nullable="true" />
         <Property Name="merge_sha" Type="Edm.String" Nullable="true" />
+        <Property Name="merge_commit_sha" Type="Edm.String" Nullable="true" />
         <Property Name="observation_summary" Type="Edm.String" Nullable="true" />
         <Property Name="operation_key" Type="Edm.String" Nullable="true" />
         <Property Name="operation_owner" Type="Edm.String" Nullable="true" />
@@ -259,9 +260,23 @@
         </Action>
       </EntityType>
 
+      <EntityType Name="FactoryArtifact">
+        <Key>
+          <PropertyRef Name="Id" />
+        </Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false" />
+        <Property Name="Status" Type="Edm.String" Nullable="false" />
+        <Property Name="task_id" Type="Edm.String" Nullable="true" />
+        <Property Name="kind" Type="Edm.String" Nullable="true" />
+        <Property Name="name" Type="Edm.String" Nullable="true" />
+        <Property Name="content" Type="Edm.String" Nullable="true" />
+        <Property Name="created_by" Type="Edm.String" Nullable="true" />
+      </EntityType>
+
       <EntityContainer Name="DarkFactoryService">
         <EntitySet Name="FactoryTasks" EntityType="Temper.DarkFactory.FactoryTask" />
         <EntitySet Name="FactoryConfigs" EntityType="Temper.DarkFactory.FactoryConfig" />
+        <EntitySet Name="FactoryArtifacts" EntityType="Temper.DarkFactory.FactoryArtifact" />
       </EntityContainer>
 
     </Schema>

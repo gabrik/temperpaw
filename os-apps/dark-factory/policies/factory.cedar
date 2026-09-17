@@ -79,6 +79,7 @@ permit(
         Action::"FactoryTask.RecordMerged", Action::"RecordMerged",
         Action::"FactoryTask.ObservationPassed", Action::"ObservationPassed",
         Action::"FactoryTask.ObservationFailed", Action::"ObservationFailed",
+        Action::"FactoryTask.MergeFinalized", Action::"MergeFinalized",
         Action::"FactoryTask.FailTask", Action::"FailTask"
     ],
     resource is FactoryTask
@@ -97,6 +98,7 @@ permit(
         Action::"FactoryTask.CheckPublishing", Action::"CheckPublishing",
         Action::"FactoryTask.CheckMerging", Action::"CheckMerging",
         Action::"FactoryTask.CheckObserving", Action::"CheckObserving",
+        Action::"FactoryTask.CheckFinalizing", Action::"CheckFinalizing",
         Action::"FactoryTask.ExpireTask", Action::"ExpireTask"
     ],
     resource is FactoryTask
@@ -113,9 +115,34 @@ permit(
         Action::"FactoryTask.CheckPublishing", Action::"CheckPublishing",
         Action::"FactoryTask.CheckMerging", Action::"CheckMerging",
         Action::"FactoryTask.CheckObserving", Action::"CheckObserving",
+        Action::"FactoryTask.CheckFinalizing", Action::"CheckFinalizing",
         Action::"FactoryTask.ExpireTask", Action::"ExpireTask"
     ],
     resource is FactoryTask
+);
+
+// FactoryArtifact rows (ADR-0067 D8): read/list are open within the tenant
+// (the console diff pane); create requires an Agent principal — the factory
+// publisher records patch artifacts over the loopback. Actionless entity.
+permit(
+    principal is Admin,
+    action,
+    resource is FactoryArtifact
+);
+
+permit(
+    principal,
+    action in [
+        Action::"read",
+        Action::"list"
+    ],
+    resource is FactoryArtifact
+);
+
+permit(
+    principal is Agent,
+    action == Action::"create",
+    resource is FactoryArtifact
 );
 
 // FactoryConfig rows are operator-managed.

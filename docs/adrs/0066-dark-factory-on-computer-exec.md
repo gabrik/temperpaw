@@ -322,3 +322,14 @@ into the calling module (a dead sandbox hard-expired a mid-repair task).
 Factory-side reprovision-on-dead-sandbox is future work; today it fails loudly.
 
 E2E evidence: `os-apps/dark-factory/.proofs/0066-e2e.md`.
+
+## Addendum (2026-09-16): merge ordering corrected in ADR-0067 D7
+
+The merge-then-observe ordering implemented here (publisher merges the PR
+during `Merging`, then observation runs post-merge) is **superseded** by
+ADR-0067 D7: the DEN controller this app was ported from deliberately
+deploys the approved head and merges the PR **only after observation
+passes** (its spec hint is stale). ADR-0067 introduces `FinalizingMerge`
++ `MergeFinalized` + `merge_commit_sha` to restore that ordering;
+`merge_sha` regains DEN semantics (the deployed/observed head). The
+TID13/TID14 e2e proofs above remain valid evidence of the old ordering.
