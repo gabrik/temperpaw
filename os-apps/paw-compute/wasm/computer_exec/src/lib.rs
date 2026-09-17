@@ -139,15 +139,15 @@ fn sandbox_handle_from_computer(computer: &Value) -> Result<SandboxHandle, Strin
 /// per-exec log file on the sandbox while stdout still carries a bounded tail.
 ///
 /// The wrapper runs the original command in a group, redirects its combined
-/// (stdout+stderr) output to `~/.exec-out/<exec_id>.log`, then emits — in
+/// (stdout+stderr) output to `/tmp/.exec-out/<exec_id>.log`, then emits — in
 /// order — the log's byte count, a `__EXEC_LOG_PATH` marker, and the last
 /// `OUTPUT_TAIL_BYTES` bytes of the log. `exit $__rc` preserves the original
 /// command's exit code, so callers still see the true status. The full log
 /// stays on the computer for follow-up Execs to grep/sed/page.
 fn wrap_command(command: &str, exec_id: &str) -> String {
-    let log = format!("~/.exec-out/{}.log", sanitize_exec_id(exec_id));
+    let log = format!("/tmp/.exec-out/{}.log", sanitize_exec_id(exec_id));
     format!(
-        "mkdir -p ~/.exec-out && {{ {command} ; }} > {log} 2>&1 ; __rc=$? ; \
+        "mkdir -p /tmp/.exec-out && {{ {command} ; }} > {log} 2>&1 ; __rc=$? ; \
          wc -c < {log} ; echo \"{EXEC_LOG_MARKER} {log}\" ; \
          tail -c {OUTPUT_TAIL_BYTES} {log} ; exit $__rc"
     )
@@ -156,7 +156,7 @@ fn wrap_command(command: &str, exec_id: &str) -> String {
 /// Marker line that separates the log-path announcement from the tail body.
 const EXEC_LOG_MARKER: &str = "__EXEC_LOG_PATH";
 
-/// Reduce an exec id to a filename-safe token so it cannot escape `~/.exec-out`.
+/// Reduce an exec id to a filename-safe token so it cannot escape `/tmp/.exec-out`.
 /// Anything outside `[A-Za-z0-9._-]` becomes `_`.
 fn sanitize_exec_id(exec_id: &str) -> String {
     let cleaned: String = exec_id
@@ -344,15 +344,15 @@ mod tests {
     fn wrap_persists_full_output_and_returns_tail() {
         let wrapped = wrap_command("echo hi", "exec-1");
         // Full output is redirected to a per-exec log file.
-        assert!(wrapped.contains("mkdir -p ~/.exec-out"));
-        assert!(wrapped.contains("~/.exec-out/exec-1.log"));
+        assert!(wrapped.contains("mkdir -p /tmp/.exec-out"));
+        assert!(wrapped.contains("/tmp/.exec-out/exec-1.log"));
         assert!(wrapped.contains("2>&1"));
         // Original command is embedded in a group so its rc is captured.
         assert!(wrapped.contains("{ echo hi ; }"));
         // Byte count + log-path marker + bounded tail are emitted to stdout.
-        assert!(wrapped.contains("wc -c < ~/.exec-out/exec-1.log"));
-        assert!(wrapped.contains("__EXEC_LOG_PATH ~/.exec-out/exec-1.log"));
-        assert!(wrapped.contains("tail -c 262144 ~/.exec-out/exec-1.log"));
+        assert!(wrapped.contains("wc -c < /tmp/.exec-out/exec-1.log"));
+        assert!(wrapped.contains("__EXEC_LOG_PATH /tmp/.exec-out/exec-1.log"));
+        assert!(wrapped.contains("tail -c 262144 /tmp/.exec-out/exec-1.log"));
         // Original exit code is preserved through the wrapper.
         assert!(wrapped.contains("__rc=$?"));
         assert!(wrapped.trim_end().ends_with("exit $__rc"));
@@ -362,23 +362,23 @@ mod tests {
     fn wrap_sanitizes_exec_id_into_filename() {
         let wrapped = wrap_command("true", "abc/../../etc 9");
         // Path separators and spaces are stripped so the id can't escape the dir.
-        assert!(wrapped.contains("~/.exec-out/abc_.._.._etc_9.log"));
+        assert!(wrapped.contains("/tmp/.exec-out/abc_.._.._etc_9.log"));
         assert!(!wrapped.contains("../../etc"));
     }
 
     #[test]
     fn parse_extracts_bytes_path_and_tail() {
-        let stdout = "1234\n__EXEC_LOG_PATH ~/.exec-out/exec-1.log\nhello\nworld\n";
+        let stdout = "1234\n__EXEC_LOG_PATH /tmp/.exec-out/exec-1.log\nhello\nworld\n";
         let cap = parse_captured_output(stdout);
         assert_eq!(cap.bytes, Some(1234));
-        assert_eq!(cap.path.as_deref(), Some("~/.exec-out/exec-1.log"));
+        assert_eq!(cap.path.as_deref(), Some("/tmp/.exec-out/exec-1.log"));
         assert_eq!(cap.tail, "hello\nworld\n");
     }
 
     #[test]
     fn parse_keeps_tail_containing_the_marker_text() {
         // The marker only counts on line 2; a later line echoing it stays in the tail.
-        let stdout = "7\n__EXEC_LOG_PATH ~/.exec-out/e.log\n__EXEC_LOG_PATH not-a-marker\n";
+        let stdout = "7\n__EXEC_LOG_PATH /tmp/.exec-out/e.log\n__EXEC_LOG_PATH not-a-marker\n";
         let cap = parse_captured_output(stdout);
         assert_eq!(cap.bytes, Some(7));
         assert_eq!(cap.tail, "__EXEC_LOG_PATH not-a-marker\n");
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn success_params_carry_exit_code_and_tails() {
         let result = ExecResult {
-            stdout: "3\n__EXEC_LOG_PATH ~/.exec-out/e.log\nok\n".to_string(),
+            stdout: "3\n__EXEC_LOG_PATH /tmp/.exec-out/e.log\nok\n".to_string(),
             stderr: String::new(),
             exit_code: 0,
         };
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(params["exit_code"], "0");
         assert_eq!(params["stdout_tail"], "ok\n");
         assert_eq!(params["stderr_tail"], "");
-        assert_eq!(params["stdout_path"], "~/.exec-out/e.log");
+        assert_eq!(params["stdout_path"], "/tmp/.exec-out/e.log");
         assert_eq!(params["stdout_bytes"], "3");
     }
 
@@ -413,7 +413,7 @@ mod tests {
     fn success_params_truncate_output() {
         let body = "y".repeat(20_000);
         let result = ExecResult {
-            stdout: format!("20000\n__EXEC_LOG_PATH ~/.exec-out/e.log\n{body}"),
+            stdout: format!("20000\n__EXEC_LOG_PATH /tmp/.exec-out/e.log\n{body}"),
             stderr: String::new(),
             exit_code: 1,
         };

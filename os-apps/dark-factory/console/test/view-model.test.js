@@ -2,9 +2,10 @@
 // These cover the OData entity-row -> view mapping, the human-gate param
 // building (CAS + op-key fencing), activity mapping from governed Execs,
 // and latest-patch selection from FactoryArtifacts. Run: node --test.
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  shouldRefreshForEvent,
   STAGES,
   toTaskView,
   toTaskList,
@@ -298,4 +299,41 @@ test("toActivityEvents defaults missing tails to empty strings", () => {
   });
   assert.equal(events[0].stdoutTail, "");
   assert.equal(events[0].stderrTail, "");
+});
+
+// -- SSE event → refresh decisions (ADR-0068) ---------------------------------
+
+describe("shouldRefreshForEvent (live activity feed)", () => {
+  it("refreshes on FactoryTask transitions", () => {
+    assert.equal(
+      shouldRefreshForEvent({ entity_type: "FactoryTask", action: "ApproveMerge", status: "Merging" }),
+      true,
+    );
+  });
+
+  it("refreshes on Exec lifecycle and output events but not bare re-checks", () => {
+    for (const action of ["Run", "ReportOutput", "RunSucceeded", "RunFailed"]) {
+      assert.equal(shouldRefreshForEvent({ entity_type: "Exec", action }), true, action);
+    }
+    // CheckOutput carries no new data — the row only changes on ReportOutput;
+    // refreshing on the bare tick would double the refetch churn.
+    assert.equal(shouldRefreshForEvent({ entity_type: "Exec", action: "CheckOutput" }), false);
+  });
+
+  it("refreshes on Computer and FactoryArtifact events", () => {
+    assert.equal(shouldRefreshForEvent({ entity_type: "Computer", action: "ProvisionComplete" }), true);
+    assert.equal(shouldRefreshForEvent({ entity_type: "FactoryArtifact", action: "PublishPR" }), true);
+  });
+
+  it("ignores unrelated platform entity chatter", () => {
+    for (const entity_type of ["Directory", "Session", "EvolutionProposal", "Agent"]) {
+      assert.equal(shouldRefreshForEvent({ entity_type, action: "Create" }), false, entity_type);
+    }
+  });
+
+  it("tolerates malformed events", () => {
+    assert.equal(shouldRefreshForEvent(null), false);
+    assert.equal(shouldRefreshForEvent({}), false);
+    assert.equal(shouldRefreshForEvent("state_change"), false);
+  });
 });

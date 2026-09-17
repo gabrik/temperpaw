@@ -43,6 +43,16 @@ permit(
     resource is FactoryConfig
 );
 
+// ADR-0068: the console subscribes to the tenant-scoped entity event feed
+// (GET /tdata/$events) for live activity. read_events is gated on resource
+// Entity; the feed itself is tenant-scoped by the server, so any
+// authenticated principal on this tenant may subscribe (mirrors DEN).
+permit(
+    principal,
+    action == Action::"read_events",
+    resource
+);
+
 // Task creation and the external kickoff: any Agent on this tenant may
 // request a task and start planning.
 permit(

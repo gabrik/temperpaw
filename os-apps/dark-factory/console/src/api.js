@@ -125,3 +125,29 @@ export const api = {
 
   decide: (taskId, action, params) => request(dispatchUrl(taskId, action), { method: "POST", body: params }),
 };
+
+// -- Live activity stream (ADR-0068) -------------------------------------------
+//
+// Tenant-scoped Temper event feed: GET /tdata/$events streams one
+// `state_change` SSE per entity dispatch (seq, entity_type, entity_id,
+// action, status). Same-origin through the vite proxy; the paw_session
+// cookie authenticates it (EventSource sends cookies same-origin). Cedar
+// `read_events` is tenant-open for authenticated console users (ADR-0068).
+//
+// Returns the EventSource so the caller can close() on unmount. Consumers
+// should filter events through view-model.shouldRefreshForEvent and debounce
+// the refetch — the stream carries every dispatch in the tenant, including
+// platform chatter the console does not render.
+export function openFactoryEventStream({ onChange, onOpen, onError } = {}) {
+  const source = new EventSource(`/tdata/$events?tenant=${TENANT}`);
+  source.addEventListener("state_change", (message) => {
+    try {
+      onChange?.(JSON.parse(message.data));
+    } catch {
+      // A malformed event must never kill the stream — ignore it.
+    }
+  });
+  source.onopen = () => onOpen?.();
+  source.onerror = (err) => onError?.(err);
+  return source;
+}

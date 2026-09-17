@@ -14,8 +14,10 @@ initial = "Created"
 
 # Created waits for Run; Running is bounded by the computer_exec trigger
 # itself (the sandbox exec polls with a hard cap and reports back via
-# RunSucceeded or RunFailed).
-allow_indefinite_states = ["Created", "Running"]
+# RunSucceeded or RunFailed). While Running, a 5s CheckOutput self-loop
+# (ADR-0005) streams in-flight output tails onto the row — Running
+# therefore has liveness coverage and is not listed allow-indefinite.
+allow_indefinite_states = ["Created"]
 
 # -- State variables ----------------------------------------------------------
 
@@ -106,6 +108,45 @@ from = ["Running"]
 to = "Failed"
 params = ["error"]
 hint = "Callback from computer_exec — execution failed before producing an exit code."
+
+# -- In-flight output streaming (ADR-0005) -------------------------------------
+
+[[action]]
+name = "CheckOutput"
+kind = "input"
+from = ["Running"]
+to = "Running"
+hint = "Re-check tick for in-flight output (computer_exec_tail). Self-loop re-arms the 5s timeout via reset_on; a not-yet-readable log reports success with an empty callback action."
+effect = [{ type = "trigger", name = "computer_exec_tail" }]
+
+[[action.triggers]]
+name = "computer_exec_tail"
+kind = "wasm"
+module = "computer_exec_tail"
+# No on_failure by design: a tailing failure must never kill the run. The
+# module never errors — every failure path degrades to the empty stay
+# callback.
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+
+[[action]]
+name = "ReportOutput"
+kind = "input"
+from = ["Running"]
+to = "Running"
+params = ["stdout_tail", "stdout_bytes"]
+hint = "Callback from computer_exec_tail — refresh the output tail and log size mid-run. The final RunSucceeded report remains authoritative (separated streams)."
+
+[[state_timeout]]
+state = "Running"
+after_seconds = 5
+on_timeout = "CheckOutput"
+reset_on = ["CheckOutput"]
 
 [[invariant]]
 name = "SucceededIsFinal"

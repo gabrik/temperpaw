@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, ensureSession } from "./api.js";
-import { STAGES, toTaskView, toTaskList, toActivityEvents, latestPatch, gateDecision, shortId, stageIndex, toProvisioningSteps } from "./view-model.js";
+import { api, ensureSession, openFactoryEventStream } from "./api.js";
+import { STAGES, toTaskView, toTaskList, toActivityEvents, latestPatch, gateDecision, shortId, stageIndex, toProvisioningSteps, shouldRefreshForEvent } from "./view-model.js";
 
 const STATUS_COPY = {
   Requested: "Your request is queued for the factory.",
@@ -282,6 +282,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [online, setOnline] = useState(false);
   const [error, setError] = useState("");
+  // Stable handle to the selected-task refresh so the SSE effect (below)
+  // can trigger it without re-opening the stream on every selection change.
+  const refreshRef = useRef(null);
 
   async function loadTasks(preferredId = "") {
     const result = await api.listTasks();
@@ -308,8 +311,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Polling loop (ADR-0067: 2–5 s until an entity change feed exists).
+  // Polling fallback (ADR-0068: the SSE feed below is the primary
+  // invalidation path; this keeps the view honest across reconnects).
   useEffect(() => {
+    refreshRef.current = null;
     if (!user || !selectedId || showNewTask) return undefined;
     let disposed = false;
     async function refresh() {
@@ -333,12 +338,48 @@ export default function App() {
       }
     }
     refresh();
+    refreshRef.current = refresh;
     const timer = setInterval(refresh, POLL_MS);
     return () => {
       disposed = true;
+      refreshRef.current = null;
       clearInterval(timer);
     };
   }, [user, selectedId, showNewTask]);
+
+  // Live activity feed (ADR-0068): the tenant-scoped event stream pushes
+  // every entity dispatch; shouldRefreshForEvent keeps only dark-factory
+  // surfaces and a ~300 ms debounce coalesces bursts (a running exec
+  // reports ReportOutput every 5 s plus CheckOutput ticks, which the
+  // predicate drops). Falls back to reloading the task list when no task
+  // is open; the interval poll above remains as the reconnect safety net.
+  useEffect(() => {
+    if (!user) return undefined;
+    let debounceTimer = null;
+    const source = openFactoryEventStream({
+      onOpen: () => {
+        // E2E-observable liveness for the stream (EventSource does not
+        // reliably appear in performance resource entries).
+        window.__factoryStreamOpen = true;
+      },
+      onChange: (change) => {
+        if (!shouldRefreshForEvent(change)) return;
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (refreshRef.current) {
+            refreshRef.current();
+          } else {
+            loadTasks().catch(() => {});
+          }
+        }, 300);
+      },
+    });
+    return () => {
+      clearTimeout(debounceTimer);
+      source.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const task = bundle ? toTaskView(bundle.task) : null;
   const logs = useMemo(() => (bundle ? toActivityEvents(bundle.execs) : []), [bundle]);

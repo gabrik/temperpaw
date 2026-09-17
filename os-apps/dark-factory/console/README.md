@@ -42,7 +42,15 @@ npm run check      # tests + production build
 | Activity log | `GET /tdata/Execs?$filter=computer_id eq …` |
 | Diff | `GET /tdata/FactoryArtifacts?$filter=task_id eq …` (patch pane) + PR link |
 | Chat | folded into the decision-card comment (`repair_context`) |
-| SSE events | 3 s polling (entity change feed is a follow-up) |
+| Live updates | SSE `/tdata/$events` (ADR-0068) + 3 s polling fallback |
+
+The console opens an `EventSource` on the tenant event feed and refetches
+the open view (300 ms debounce) when a relevant `state_change` arrives —
+FactoryTask/Computer/FactoryArtifact transitions and Exec lifecycle/
+`ReportOutput` events (the in-flight tails come from paw-compute
+ADR-0005's `CheckOutput` self-loop). `Exec.CheckOutput` ticks and
+unrelated platform chatter are dropped by `shouldRefreshForEvent`. The
+3 s poll remains as the reconnect safety net.
 
 Human gates dispatch with CAS params: `ApprovePlan`/`RejectPlan` fence on
 `plan_digest`, `ApproveMerge`/`RequestChanges` on `head_sha`, each with a

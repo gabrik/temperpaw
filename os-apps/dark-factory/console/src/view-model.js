@@ -198,3 +198,28 @@ export function gateDecision(task, gate, decision, comment, owner, uuid = () => 
     ? { action: "ApproveMerge", params: { ...base, head_sha: task.head_sha } }
     : { action: "RequestChanges", params: { ...base, head_sha: task.head_sha, repair_context: trimmed } };
 }
+
+// -- SSE event → refresh decisions (ADR-0068) ---------------------------------
+//
+// The console subscribes to the tenant-scoped Temper event stream
+// (`GET /tdata/$events`, event `state_change`). Every dispatch on any entity
+// arrives; refreshing the current OData view on all of them would be noisy
+// and expensive (the platform emits Directory/Session chatter constantly).
+// This predicate keeps exactly the dark-factory surfaces:
+//
+// - FactoryTask  — list rows, detail header, stage rail, gates
+// - Exec         — activity feed; Run / ReportOutput (in-flight tail,
+//                  ADR-0005) / RunSucceeded / RunFailed. NOT CheckOutput:
+//                  the bare re-check tick carries no new data and would
+//                  double the refetch churn every 5 s.
+// - Computer     — provisioning steps
+// - FactoryArtifact — latest patch / PR card
+export function shouldRefreshForEvent(change) {
+  if (!change || typeof change !== "object") return false;
+  const type = change.entity_type;
+  if (type === "FactoryTask" || type === "Computer" || type === "FactoryArtifact") return true;
+  if (type === "Exec") {
+    return ["Run", "ReportOutput", "RunSucceeded", "RunFailed"].includes(change.action);
+  }
+  return false;
+}

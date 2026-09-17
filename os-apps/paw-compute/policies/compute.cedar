@@ -159,22 +159,25 @@ permit(
 );
 
 // Allow computer_exec to make HTTP calls (Computer row loopback read,
-// sandbox provider data plane).
+// sandbox provider data plane). computer_exec_tail (ADR-0005) needs the
+// same surface: it reads the Computer row and the per-exec log file on the
+// sandbox via the file API.
 permit(
     principal is Agent,
     action == Action::"http_call",
     resource is HttpEndpoint
 ) when {
-    context.module == "computer_exec"
+    ["computer_exec", "computer_exec_tail"].contains(context.module)
 };
 
-// Allow computer_exec to access secrets (temper_api_url, sandbox provider keys).
+// Allow computer_exec (+ tail) to access secrets (temper_api_url, sandbox
+// provider keys).
 permit(
     principal is Agent,
     action == Action::"access_secret",
     resource is Secret
 ) when {
-    context.module == "computer_exec"
+    ["computer_exec", "computer_exec_tail"].contains(context.module)
 };
 
 // computer_provision creates sandboxes (provider control plane) and runs the
