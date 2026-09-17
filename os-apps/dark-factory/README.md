@@ -203,7 +203,7 @@ Profiles are declarative JSON in `scripts/profiles/*.json`:
 | Profile | Repo | Purpose |
 | --- | --- | --- |
 | `dark-factory-e2e` | `gabriele-baldoni_ddog/dark-factory-e2e` | Tiny scratch crate; full pipeline ~10 min; opens real PRs there |
-| `den` | `ddoghq/den` | Real repo; nightly toolchain via `preparation_commands`, 1800s build/test budgets |
+| `den` | `ddoghq/den` | Real repo; nightly toolchain via `preparation_commands`, fmt+clippy+Tier-1 validation, Tier-2 kind e2e (`ci/e2e.sh`) as the deploy gate, manual merge |
 
 A profile declares `git_url`, `base_branch`, `checkout_mode`,
 `validation_commands` / `build_commands` / `preparation_commands` /

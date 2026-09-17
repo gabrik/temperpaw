@@ -1,6 +1,6 @@
 {
   "name": "den",
-  "description": "ddoghq/den (private). Cargo workspace (crates/den + crates/libs/* default members). rust-toolchain.toml pins nightly-2026-04-30 with clippy/rustfmt — rustup auto-installs it on the Computer on first cargo invocation. Gates mirror den's own developer bar: validation = pre-push hook (fmt + clippy -D warnings) plus the README's no-docker Tier-1 tests, observation = the in-process instant e2e. Tier-2 (`bash ci/e2e.sh`, kind cluster) is intentionally left to den's own GitHub Actions, which already runs it on every PR. merge_mode=manual: a human merges the PR on GitHub (ADR-0070).",
+  "description": "ddoghq/den (private). Gates mirror den's own developer bar: validation = pre-push (fmt + clippy) + no-docker Tier-1, deploy = Tier-2 kind e2e (`bash ci/e2e.sh`) inside the sandbox, observation = instant e2e. merge_mode=manual: a human merges the PR on GitHub (ADR-0070).",
   "config": {
     "repo_url": "https://github.com/ddoghq/den",
     "base_branch": "main",
@@ -24,7 +24,7 @@
   },
   "repo": {
     "display_name": "den",
-    "description": "ddoghq/den (private). Cargo workspace (crates/den + crates/libs/* default members). rust-toolchain.toml pins nightly-2026-04-30 — preparation runs `rustup show` to install it before the checkout baseline. Validation = den's own pre-push bar (fmt + clippy -D warnings) plus no-docker Tier-1 tests (den-slt/pg testcontainers excluded, per den README); observation = in-process instant e2e (`cargo test -p den --test e2e`). Tier-2 (`bash ci/e2e.sh`, kind cluster) runs in den's own GitHub Actions on every PR instead of in the sandbox.",
+    "description": "ddoghq/den (private). Cargo workspace (crates/den + crates/libs/* default members). rust-toolchain.toml pins nightly-2026-04-30 \u2014 preparation runs `rustup show` to install it before the checkout baseline. Validation = den's own pre-push bar (fmt + clippy -D warnings) plus no-docker Tier-1 tests (den-slt/pg testcontainers excluded, per den README). Deploy = Tier-2 `bash ci/e2e.sh`: builds the reviewed head, provisions an ephemeral kind cluster in the sandbox (dind), deploys Postgres + MinIO + den-cluster x3, runs the distributed e2e Job in-cluster, tears down (~15-20 min, 2700s budget). Observation = in-process instant e2e (`cargo test -p den --test e2e`).",
     "team_id": "",
     "git_provider": "github",
     "git_url": "https://github.com/ddoghq/den",
@@ -35,7 +35,7 @@
     "merge_mode": "manual",
     "validation_commands": "[{\"argv\":[\"cargo\",\"fmt\",\"--check\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":300},{\"argv\":[\"cargo\",\"clippy\",\"--locked\",\"--workspace\",\"--all-targets\",\"--\",\"-D\",\"warnings\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":1800},{\"argv\":[\"cargo\",\"test\",\"--locked\",\"--workspace\",\"--exclude\",\"den-slt\",\"--exclude\",\"den-pg-stores\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":1800},{\"argv\":[\"cargo\",\"test\",\"-p\",\"den-slt\",\"--test\",\"mem\",\"--locked\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":900}]",
     "build_commands": "[{\"argv\":[\"cargo\",\"build\",\"--locked\",\"--workspace\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":1800}]",
-    "deploy_commands": "[]",
+    "deploy_commands": "[{\"argv\": [\"bash\", \"ci/e2e.sh\"], \"cwd\": \"/work/repo\", \"timeout_seconds\": 2700}]",
     "observation_commands": "[{\"argv\":[\"cargo\",\"test\",\"-p\",\"den\",\"--test\",\"e2e\",\"--locked\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":1800}]",
     "preparation_commands": "[{\"argv\":[\"rustup\",\"show\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":900}]",
     "computer_image": "den-dev-bookworm-dind-v4",
