@@ -1,10 +1,12 @@
 # Dark Factory — FactoryTask
 #
-# One task that an agent plans, implements, validates, publishes, merges, and
-# observes on a paw-compute Computer, with two human gates (plan approval and
-# merge approval) and bounded repair loops. Ported from the external
-# den-software-factory demo app (same fencing contract; 12 states after
-# ADR-0067 D7 added FinalizingMerge), with these deliberate changes:
+# One task that an agent plans, implements, validates, publishes, deploys,
+# observes, and merges on a paw-compute Computer, with two human gates (plan
+# approval and merge approval) and bounded repair loops. Ported from the
+# external den-software-factory demo app (same fencing contract; 12 states
+# after ADR-0067 D7 added FinalizingMerge; the Merging state was renamed to
+# Deploying by ADR-0069 — observe-before-merge semantics unchanged), with
+# these deliberate changes:
 #
 #   1. `sandbox_id` is gone. The task attaches 1:1 to a paw-compute Computer
 #      (`computer_id`); the Computer row holds the sandbox identity.
@@ -16,9 +18,9 @@
 #      one state_timeout per state, so the phase budget is enforced by the
 #      modules: each counts its ticks and reports ExpireTask at the bound —
 #      130 ticks (65 min) for Planning/Implementing, the Pi run budget per
-#      GB 2026-09-16; 60 for Validating/Observing; 30 for PublishingPR/
-#      Merging/FinalizingMerge). A permanently broken module fails its trigger and the
-#      kernel dispatches ExpireTask via on_failure.
+#      GB 2026-09-16; 60 for Validating/Deploying/Observing; 30 for
+#      PublishingPR/FinalizingMerge). A permanently broken module fails its
+#      trigger and the kernel dispatches ExpireTask via on_failure.
 #   3. `base_sha` moves from StartPlanning to SubmitPlan: the planner
 #      resolves the base commit during checkout (GitHub API or clone HEAD)
 #      and freezes it with the plan it submits.
@@ -44,7 +46,7 @@ states = [
   "Validating",
   "PublishingPR",
   "AwaitingMergeApproval",
-  "Merging",
+  "Deploying",
   "Observing",
   "FinalizingMerge",
   "Completed",
@@ -72,6 +74,37 @@ initial = ""
 
 [[state]]
 name = "factory_id"
+type = "string"
+initial = ""
+
+# ADR-0069: the selected FactoryRepo row and the non-secret profile snapshot
+# pinned on the first Planning tick (PinRepoProfile). Phases read the
+# snapshot, never the live profile, so mid-flight profile edits cannot
+# retarget the task. Empty on legacy (FactoryConfig-selected) tasks.
+[[state]]
+name = "factory_repo_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repo_profile_snapshot"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repo_profile_digest"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repo_profile_revision"
+type = "string"
+initial = ""
+
+# What the Deploy phase produced (e.g. a URL or release id) — empty when the
+# profile declares no deploy_commands (passthrough, ADR-0069 D3).
+[[state]]
+name = "deployment_ref"
 type = "string"
 initial = ""
 
@@ -132,7 +165,7 @@ initial = ""
 
 # The real GitHub merge commit SHA, recorded by MergeFinalized after
 # observation passes (ADR-0067 D7: observe-before-merge). Distinct from
-# merge_sha, which is the deployed/observed head recorded by RecordMerged.
+# merge_sha, which is the deployed/observed head recorded by RecordDeployed.
 [[state]]
 name = "merge_commit_sha"
 type = "string"
@@ -180,7 +213,7 @@ name = "StartPlanning"
 kind = "input"
 from = ["Requested"]
 to = "Planning"
-params = ["task_prompt", "factory_id", "computer_id", "operation_key", "operation_owner", "phase_ticks"]
+params = ["task_prompt", "factory_id", "factory_repo_id", "computer_id", "operation_key", "operation_owner", "phase_ticks"]
 hint = "Record the request and let factory_planner produce a plan on a Computer. computer_id may name an existing Ready computer to reuse; empty means the planner creates one."
 effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
 
@@ -223,6 +256,48 @@ github_token = "{secret:github_token}"
 model_api_key = "{secret:anthropic_api_key}"
 pi_provider = "anthropic"
 pi_model = "claude-sonnet-4-6"
+
+# ADR-0069: pin the selected FactoryRepo's non-secret profile snapshot.
+# Dispatched exactly once by factory_planner on the first tick (it guards on
+# an empty repo_profile_digest). Fencing matches the other module-reported
+# actions. Params named like the fields set them implicitly.
+[[action]]
+name = "PinRepoProfile"
+kind = "input"
+from = ["Planning"]
+to = "Planning"
+params = [
+  "factory_repo_id",
+  "repo_profile_snapshot",
+  "repo_profile_digest",
+  "repo_profile_revision",
+  "operation_result",
+  "expected_operation_key",
+  "expected_operation_owner",
+]
+hint = "Pin the FactoryRepo profile snapshot (revision + digest) onto the task; module-internal, CAS-fenced."
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "factory_repo_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "repo_profile_snapshot"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "repo_profile_digest"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
 
 [[action]]
 name = "AttachComputer"
@@ -549,9 +624,9 @@ field = "operation_owner"
 name = "ApproveMerge"
 kind = "input"
 from = ["AwaitingMergeApproval"]
-to = "Merging"
+to = "Deploying"
 params = ["head_sha", "operation_key", "operation_owner", "phase_ticks"]
-hint = "Authorize merge of only the reviewed head SHA."
+hint = "Authorize deployment of only the reviewed head SHA (ADR-0069: the human code gate clears deploy, not merge)."
 effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
 
 [[action.constraints]]
@@ -593,21 +668,25 @@ param = "operation_key"
 kind = "param_nonempty"
 param = "operation_owner"
 
+# ADR-0069: real Deploy phase. factory_deployer runs the pinned profile's
+# deploy_commands on the task's Computer; an empty command list is a
+# passthrough (preserves the pre-ADR-0069 record-only behavior). Deploy
+# failure is fail-closed (FailTask — never an automatic merge or retry).
 [[action]]
-name = "CheckMerging"
+name = "CheckDeploying"
 kind = "input"
-from = ["Merging"]
-to = "Merging"
-hint = "Re-check tick for the merge phase (factory_publisher)."
+from = ["Deploying"]
+to = "Deploying"
+hint = "Re-check tick for the deploy phase (factory_deployer)."
 effect = [
-  { type = "trigger", name = "factory_publisher" },
+  { type = "trigger", name = "factory_deployer" },
   { type = "increment", var = "phase_ticks" },
 ]
 
 [[action.triggers]]
-name = "factory_publisher"
+name = "factory_deployer"
 kind = "wasm"
-module = "factory_publisher"
+module = "factory_deployer"
 on_failure = "ExpireTask"
 
 [action.triggers.config]
@@ -616,15 +695,14 @@ tensorlake_api_key = "{secret:tensorlake_api_key}"
 modal_token_id = "{secret:modal_token_id}"
 modal_token_secret = "{secret:modal_token_secret}"
 modal_bridge_url = "{secret:modal_bridge_url}"
-github_token = "{secret:github_token}"
 
 [[action]]
-name = "RecordMerged"
+name = "RecordDeployed"
 kind = "input"
-from = ["Merging"]
+from = ["Deploying"]
 to = "Observing"
-params = ["merge_sha", "operation_result", "expected_operation_key", "expected_operation_owner", "operation_key", "operation_owner", "phase_ticks"]
-hint = "Record the deployed approved head (merge_sha = head_sha). The PR stays OPEN: observation runs before the GitHub merge (ADR-0067 D7). Mints the operation key for the observation phase."
+params = ["merge_sha", "deployment_ref", "operation_result", "expected_operation_key", "expected_operation_owner", "operation_key", "operation_owner", "phase_ticks"]
+hint = "Record the deployed approved head (merge_sha = head_sha, deployment_ref = what the profile's deploy produced, may be empty). The PR stays OPEN: observation runs before the GitHub merge (ADR-0067 D7). Mints the operation key for the observation phase."
 effect = [{ type = "set_counter_from_param", var = "phase_ticks", param = "phase_ticks" }]
 
 [[action.constraints]]
@@ -809,7 +887,7 @@ param = "operation_owner"
 [[action]]
 name = "FailTask"
 kind = "input"
-from = ["Planning", "Implementing", "Validating", "PublishingPR", "Merging", "Observing", "FinalizingMerge"]
+from = ["Planning", "Implementing", "Validating", "PublishingPR", "Deploying", "Observing", "FinalizingMerge"]
 to = "Failed"
 params = [
   "failure_reason",
@@ -845,7 +923,7 @@ temper_api_url = "{secret:temper_api_url}"
 [[action]]
 name = "ExpireTask"
 kind = "input"
-from = ["Planning", "Implementing", "Validating", "PublishingPR", "Merging", "Observing", "FinalizingMerge"]
+from = ["Planning", "Implementing", "Validating", "PublishingPR", "Deploying", "Observing", "FinalizingMerge"]
 to = "Failed"
 params = ["failure_reason", "error", "integration", "operation_result"]
 hint = "System-only hard stop: a phase exceeded its time budget (state_timeout) or a module call failed (trigger on_failure). No operation fencing — the timeout cannot know the live key."
@@ -894,10 +972,10 @@ on_timeout = "CheckPublishing"
 reset_on = ["CheckPublishing"]
 
 [[state_timeout]]
-state = "Merging"
+state = "Deploying"
 after_seconds = 30
-on_timeout = "CheckMerging"
-reset_on = ["CheckMerging"]
+on_timeout = "CheckDeploying"
+reset_on = ["CheckDeploying"]
 
 [[state_timeout]]
 state = "Observing"

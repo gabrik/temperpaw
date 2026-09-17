@@ -123,11 +123,17 @@ fn exec_status(exec: &Value) -> &str {
     exec.get("status").and_then(|v| v.as_str()).unwrap_or("")
 }
 
-fn checkout_command() -> String {
+fn checkout_command(preparation: Option<&str>) -> String {
     // F21: treat an already-committed base as success (idempotency no-op)
     // now that exit codes gate step outcomes (F20).
+    // ADR-0069: profile preparation_commands (install/configure steps the
+    // repo needs) run before the baseline commit, fail-closed
+    // (`|| exit 1` — a plain `&&` chain would suppress set -e).
+    let prep = preparation
+        .map(|p| format!("{p} || exit 1; "))
+        .unwrap_or_default();
     format!(
-        "set -eu; mkdir -p {REPO_WORKDIR}; cd {REPO_WORKDIR}; git init -q; git add -A; {{ git diff --cached --quiet || git -c user.email=factory@temper.local -c user.name=dark-factory commit -q -m 'dark-factory checkout'; }}"
+        "set -eu; {prep}mkdir -p {REPO_WORKDIR}; cd {REPO_WORKDIR}; git init -q; git add -A; {{ git diff --cached --quiet || git -c user.email=factory@temper.local -c user.name=dark-factory commit -q -m 'dark-factory checkout'; }}"
     )
 }
 
@@ -168,6 +174,39 @@ fn required(fields: &Value, name: &str) -> Result<String, String> {
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("task row is missing required field '{name}'"))
+}
+
+// -- ADR-0069: repository profile pinning --------------------------------------
+
+/// A repo-selected task pins its profile snapshot exactly once, on the first
+/// Planning tick (before any computer work). Legacy tasks (no
+/// factory_repo_id) never pin.
+fn needs_repo_pin(factory_repo_id: &str, repo_profile_digest: &str) -> bool {
+    !factory_repo_id.trim().is_empty() && repo_profile_digest.trim().is_empty()
+}
+
+/// Only Active FactoryRepo profiles are selectable (ADR-0069 lifecycle).
+fn ensure_repo_selectable(repo_row: &Value) -> Result<(), String> {
+    let status = repo_row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    match status {
+        "Active" => Ok(()),
+        other if other.is_empty() => Err("FactoryRepo row is missing status".into()),
+        other => Err(format!(
+            "FactoryRepo profile is not selectable in state {other} (must be Active)"
+        )),
+    }
+}
+
+/// Setting resolution: non-empty profile value wins over the trigger config
+/// value, which wins over the built-in default.
+fn pick_setting(profile: &Value, key: &str, config_value: &str, default: &str) -> String {
+    if let Some(v) = profile.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        return v.to_string();
+    }
+    if !config_value.is_empty() {
+        return config_value.to_string();
+    }
+    default.to_string()
 }
 
 fn field_or(fields: &Value, name: &str, default: &str) -> String {
@@ -214,11 +253,68 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     let computer_id = field_or(fields, "computer_id", "");
     let operation_key = required(fields, "operation_key")?;
     let operation_owner = required(fields, "operation_owner")?;
-    let factory_id = required(fields, "factory_id")?;
+    // ADR-0069: a task selects either a FactoryRepo (new path) or a legacy
+    // FactoryConfig (compatibility path); at least one is required.
+    let factory_repo_id = field_or(fields, "factory_repo_id", "");
+    let factory_id = field_or(fields, "factory_id", "");
+    if factory_repo_id.trim().is_empty() && factory_id.trim().is_empty() {
+        return Err("task has neither factory_repo_id nor factory_id".into());
+    }
     let task_prompt = required(fields, "task_prompt")?;
     let repair_context = field_or(fields, "repair_context", "");
     let phase_ticks = counter(counters, "phase_ticks");
     let repair_round = counter(counters, "repair_round");
+
+    // ADR-0069: pin the FactoryRepo profile snapshot before any other work.
+    // The snapshot is non-secret (credential refs never copied) and frozen for
+    // the task's whole life; the tick after pinning proceeds with
+    // repo_profile_digest set.
+    if needs_repo_pin(&factory_repo_id, &field_or(fields, "repo_profile_digest", "")) {
+        let row = factory_common::get_entity(ctx, "FactoryRepos", &factory_repo_id, fields)?;
+        ensure_repo_selectable(&row)?;
+        let repo_fields = row.get("fields").cloned().unwrap_or(json!({}));
+        // Global policy (budgets, Pi defaults) still comes from the legacy
+        // FactoryConfig when one is linked; otherwise built-in defaults.
+        let policy = if factory_id.trim().is_empty() {
+            json!({})
+        } else {
+            factory_common::get_entity(ctx, "FactoryConfigs", &factory_id, fields)
+                .ok()
+                .and_then(|r| r.get("fields").cloned())
+                .unwrap_or(json!({}))
+        };
+        let revision = factory_common::repo_profile_revision(&repo_fields);
+        let digest = field_or(&repo_fields, "profile_digest", "");
+        let digest = if digest.is_empty() {
+            // Fallback for writerless rows: hash the same canonical payload
+            // writers (bootstrap) hash — ADR-0069 single digest rule
+            // ("sha256:"-prefixed hex).
+            format!(
+                "sha256:{}",
+                factory_common::sha256_hex(&factory_common::repo_profile_digest_payload(&repo_fields))
+            )
+        } else {
+            digest
+        };
+        let snapshot = factory_common::build_profile_snapshot(&repo_fields, &policy, &revision, &digest);
+        ctx.log(
+            "info",
+            &format!("factory_planner: task {task_id} pinning FactoryRepo {factory_repo_id} rev {revision}"),
+        );
+        set_success_result(
+            "PinRepoProfile",
+            &json!({
+                "factory_repo_id": factory_repo_id,
+                "repo_profile_snapshot": snapshot.to_string(),
+                "repo_profile_digest": digest,
+                "repo_profile_revision": revision,
+                "operation_result": format!("pinned FactoryRepo {factory_repo_id} rev {revision}"),
+                "expected_operation_key": operation_key,
+                "expected_operation_owner": operation_owner,
+            }),
+        );
+        return Ok(());
+    }
 
     ctx.log(
         "info",
@@ -273,12 +369,11 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             set_success_result("", &json!({}));
         }
         TickDecision::CreateComputer => {
-            let config = factory_common::get_entity(ctx, "FactoryConfigs", &factory_id, fields)?;
-            let cfg = config.get("fields").cloned().unwrap_or(json!({}));
+            let cfg = factory_common::load_profile(ctx, fields, fields)?;
             let image = field_or(&cfg, "computer_image", "");
             if image.is_empty() {
                 return Err(
-                    "FactoryConfig is missing computer_image (required for planner-created computers)"
+                    "profile is missing computer_image (required for planner-created computers)"
                         .into(),
                 );
             }
@@ -335,11 +430,10 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             );
         }
         TickDecision::StartCheckout => {
-            let config = factory_common::get_entity(ctx, "FactoryConfigs", &factory_id, fields)?;
-            let cfg = config.get("fields").cloned().unwrap_or(json!({}));
+            let cfg = factory_common::load_profile(ctx, fields, fields)?;
             let repo_url = field_or(&cfg, "repo_url", "");
             if repo_url.is_empty() {
-                return Err("FactoryConfig is missing repo_url".into());
+                return Err("profile is missing repo_url (FactoryRepo git_url)".into());
             }
             let base_branch = field_or(&cfg, "base_branch", "main");
             let slug = factory_common::github_repo_slug(&repo_url)?;
@@ -355,13 +449,21 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             sandbox_file_write(ctx, &handle, BASE_SHA_PATH, &format!("{base_sha}\n"))?;
             write_repo_tree(ctx, &handle, &slug, &base_sha)?;
             let marker = format!("{operation_key}:{}", Step::Checkout.marker());
+            // ADR-0069: profile preparation_commands (install/configure the
+            // repo needs) run inside the checkout Exec before the baseline
+            // commit, fail-closed.
+            let prep = factory_common::profile_commands(
+                &cfg,
+                "preparation_commands",
+                &factory_common::factory_context_env(&task_id, "", &base_sha, ""),
+            )?;
             factory_common::create_and_run_exec(
                 ctx,
                 &computer_id,
                 &task_id,
                 &marker,
                 Step::Checkout.description(),
-                &checkout_command(),
+                &checkout_command(prep.as_deref()),
                 fields,
             )?;
             set_success_result("", &json!({}));
@@ -371,30 +473,20 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             let handle = factory_common::computer_sandbox_handle(
                 computer.get("fields").unwrap_or(&json!({})),
             )?;
-            let env_var = ctx
-                .config
-                .get("model_env_var")
-                .filter(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_else(|| "ANTHROPIC_API_KEY".to_string());
+            // ADR-0069: profile values win over trigger config for model
+            // selection; the credential itself still comes only from the
+            // trigger config (secret slot, never the profile — D7).
+            let profile = factory_common::load_profile(ctx, fields, fields).unwrap_or(json!({}));
+            let cfg_str = |key: &str| ctx.config.get(key).map(|s| s.as_str()).unwrap_or("");
+            let env_var = pick_setting(&profile, "model_env_var", cfg_str("model_env_var"), "ANTHROPIC_API_KEY");
+            let provider = pick_setting(&profile, "pi_provider", cfg_str("pi_provider"), "anthropic");
+            let model = pick_setting(&profile, "pi_model", cfg_str("pi_model"), "claude-sonnet-4-6");
             let api_key = ctx
                 .config
                 .get("model_api_key")
                 .filter(|s| !s.is_empty())
                 .cloned()
                 .ok_or("trigger config is missing model_api_key")?;
-            let provider = ctx
-                .config
-                .get("pi_provider")
-                .filter(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_else(|| "anthropic".to_string());
-            let model = ctx
-                .config
-                .get("pi_model")
-                .filter(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
             sandbox_file_write(ctx, &handle, ENV_PATH, &format!("{env_var}={api_key}\n"))?;
             sandbox_file_write(ctx, &handle, PROMPT_PATH, &plan_prompt(&task_prompt, &repair_context))?;
             let marker = format!("{operation_key}:{}", Step::Plan.marker());
@@ -565,6 +657,48 @@ mod tests {
         );
     }
 
+    // -- ADR-0069: repo profile pinning ---------------------------------------
+
+    #[test]
+    fn checkout_prepends_preparation_fail_closed() {
+        let with_prep = checkout_command(Some("( cd . && timeout 300 apt-get update )"));
+        assert!(
+            with_prep.starts_with("set -eu; ( cd . && timeout 300 apt-get update ) || exit 1; mkdir -p"),
+            "got: {with_prep}"
+        );
+        let without = checkout_command(None);
+        assert!(without.starts_with("set -eu; mkdir -p"), "got: {without}");
+        assert!(!without.contains("exit 1"), "no prep, no guard: {without}");
+    }
+
+    #[test]
+    fn repo_pin_needed_only_when_selected_and_unpinned() {
+        assert!(needs_repo_pin("en-repo-1", ""));
+        assert!(!needs_repo_pin("en-repo-1", "sha256:abc"));
+        assert!(!needs_repo_pin("", ""), "legacy task: no pin step");
+        assert!(!needs_repo_pin("  ", ""), "blank id is legacy");
+    }
+
+    #[test]
+    fn repo_pin_requires_active_profile() {
+        let active = json!({"status": "Active", "fields": {"repo_id": "den"}});
+        assert!(ensure_repo_selectable(&active).is_ok());
+        let draft = json!({"status": "Draft", "fields": {}});
+        assert!(ensure_repo_selectable(&draft).unwrap_err().contains("Draft"));
+        let archived = json!({"status": "Archived", "fields": {}});
+        assert!(ensure_repo_selectable(&archived).is_err());
+        let missing = json!({});
+        assert!(ensure_repo_selectable(&missing).is_err(), "missing row is not selectable");
+    }
+
+    #[test]
+    fn profile_setting_prefers_profile_then_config_then_default() {
+        let profile = json!({"pi_model": "claude-opus-4-7", "pi_provider": ""});
+        assert_eq!(pick_setting(&profile, "pi_model", "cfg-model", "dflt"), "claude-opus-4-7");
+        assert_eq!(pick_setting(&profile, "pi_provider", "cfg-provider", "dflt"), "cfg-provider");
+        assert_eq!(pick_setting(&json!({}), "pi_model", "", "dflt"), "dflt");
+    }
+
     #[test]
     fn checkout_starts_once_attached() {
         assert_eq!(
@@ -664,7 +798,7 @@ mod f21_tests {
 
     #[test]
     fn checkout_command_tolerates_already_committed_base() {
-        let cmd = checkout_command();
+        let cmd = checkout_command(None);
         assert!(
             cmd.contains("git diff --cached --quiet"),
             "checkout command must skip the commit when the base is already committed: {cmd}"

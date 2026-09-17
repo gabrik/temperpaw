@@ -11,6 +11,11 @@
         <Property Name="Status" Type="Edm.String" Nullable="false" />
         <Property Name="task_prompt" Type="Edm.String" Nullable="true" />
         <Property Name="factory_id" Type="Edm.String" Nullable="true" />
+        <Property Name="factory_repo_id" Type="Edm.String" Nullable="true" />
+        <Property Name="repo_profile_snapshot" Type="Edm.String" Nullable="true" />
+        <Property Name="repo_profile_digest" Type="Edm.String" Nullable="true" />
+        <Property Name="repo_profile_revision" Type="Edm.String" Nullable="true" />
+        <Property Name="deployment_ref" Type="Edm.String" Nullable="true" />
         <Property Name="computer_id" Type="Edm.String" Nullable="true" />
         <Property Name="base_sha" Type="Edm.String" Nullable="true" />
         <Property Name="plan_text" Type="Edm.String" Nullable="true" />
@@ -34,6 +39,7 @@
           <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
           <Parameter Name="task_prompt" Type="Edm.String" Nullable="false" />
           <Parameter Name="factory_id" Type="Edm.String" />
+          <Parameter Name="factory_repo_id" Type="Edm.String" />
           <Parameter Name="computer_id" Type="Edm.String" />
           <Parameter Name="operation_key" Type="Edm.String" Nullable="false" />
           <Parameter Name="operation_owner" Type="Edm.String" Nullable="false" />
@@ -50,6 +56,16 @@
           <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="true" />
           <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="true" />
           <ReturnType Type="Temper.DarkFactory.FactoryTask" />
+        </Action>
+        <Action Name="PinRepoProfile" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
+          <Parameter Name="factory_repo_id" Type="Edm.String" Nullable="false" />
+          <Parameter Name="repo_profile_snapshot" Type="Edm.String" Nullable="false" />
+          <Parameter Name="repo_profile_digest" Type="Edm.String" Nullable="false" />
+          <Parameter Name="repo_profile_revision" Type="Edm.String" />
+          <Parameter Name="operation_result" Type="Edm.String" />
+          <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
+          <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
         </Action>
         <Action Name="SubmitPlan" IsBound="true">
           <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
@@ -151,13 +167,14 @@
           <Parameter Name="phase_ticks" Type="Edm.String" />
         </Action>
 
-        <Action Name="CheckMerging" IsBound="true">
+        <Action Name="CheckDeploying" IsBound="true">
           <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
         </Action>
 
-        <Action Name="RecordMerged" IsBound="true">
+        <Action Name="RecordDeployed" IsBound="true">
           <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryTask" />
           <Parameter Name="merge_sha" Type="Edm.String" Nullable="false" />
+          <Parameter Name="deployment_ref" Type="Edm.String" />
           <Parameter Name="operation_result" Type="Edm.String" />
           <Parameter Name="expected_operation_key" Type="Edm.String" Nullable="false" />
           <Parameter Name="expected_operation_owner" Type="Edm.String" Nullable="false" />
@@ -260,6 +277,102 @@
         </Action>
       </EntityType>
 
+      <EntityType Name="FactoryRepo">
+        <Key>
+          <PropertyRef Name="Id" />
+        </Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false" />
+        <Property Name="Status" Type="Edm.String" Nullable="false" />
+        <Property Name="repo_id" Type="Edm.String" Nullable="true" />
+        <Property Name="display_name" Type="Edm.String" Nullable="true" />
+        <Property Name="description" Type="Edm.String" Nullable="true" />
+        <Property Name="team_id" Type="Edm.String" Nullable="true" />
+        <Property Name="git_provider" Type="Edm.String" Nullable="true" />
+        <Property Name="git_url" Type="Edm.String" Nullable="true" />
+        <Property Name="base_branch" Type="Edm.String" Nullable="true" />
+        <Property Name="checkout_mode" Type="Edm.String" Nullable="true" />
+        <Property Name="publish_mode" Type="Edm.String" Nullable="true" />
+        <Property Name="publish_credential_ref" Type="Edm.String" Nullable="true" />
+        <Property Name="validation_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="build_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="deploy_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="observation_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="preparation_commands" Type="Edm.String" Nullable="true" />
+        <Property Name="computer_image" Type="Edm.String" Nullable="true" />
+        <Property Name="setup_script" Type="Edm.String" Nullable="true" />
+        <Property Name="cpu_cores" Type="Edm.String" Nullable="true" />
+        <Property Name="memory_gb" Type="Edm.String" Nullable="true" />
+        <Property Name="storage_gb" Type="Edm.String" Nullable="true" />
+        <Property Name="source_credential_ref" Type="Edm.String" Nullable="true" />
+        <Property Name="command_secret_bindings" Type="Edm.String" Nullable="true" />
+        <Property Name="profile_digest" Type="Edm.String" Nullable="true" />
+        <Property Name="created_by" Type="Edm.String" Nullable="true" />
+        <Property Name="updated_by" Type="Edm.String" Nullable="true" />
+        <Property Name="profile_revision" Type="Edm.String" Nullable="true" />
+
+        <Action Name="Revise" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryRepo" />
+          <Parameter Name="display_name" Type="Edm.String" />
+          <Parameter Name="description" Type="Edm.String" />
+          <Parameter Name="team_id" Type="Edm.String" />
+          <Parameter Name="git_provider" Type="Edm.String" />
+          <Parameter Name="git_url" Type="Edm.String" Nullable="false" />
+          <Parameter Name="base_branch" Type="Edm.String" />
+          <Parameter Name="checkout_mode" Type="Edm.String" />
+          <Parameter Name="publish_mode" Type="Edm.String" />
+          <Parameter Name="publish_credential_ref" Type="Edm.String" />
+          <Parameter Name="validation_commands" Type="Edm.String" />
+          <Parameter Name="build_commands" Type="Edm.String" />
+          <Parameter Name="deploy_commands" Type="Edm.String" />
+          <Parameter Name="observation_commands" Type="Edm.String" />
+          <Parameter Name="preparation_commands" Type="Edm.String" />
+          <Parameter Name="computer_image" Type="Edm.String" />
+          <Parameter Name="setup_script" Type="Edm.String" />
+          <Parameter Name="cpu_cores" Type="Edm.String" />
+          <Parameter Name="memory_gb" Type="Edm.String" />
+          <Parameter Name="storage_gb" Type="Edm.String" />
+          <Parameter Name="source_credential_ref" Type="Edm.String" />
+          <Parameter Name="command_secret_bindings" Type="Edm.String" />
+          <Parameter Name="profile_digest" Type="Edm.String" />
+          <Parameter Name="updated_by" Type="Edm.String" />
+        </Action>
+
+        <Action Name="Update" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryRepo" />
+          <Parameter Name="display_name" Type="Edm.String" />
+          <Parameter Name="description" Type="Edm.String" />
+          <Parameter Name="team_id" Type="Edm.String" />
+          <Parameter Name="git_provider" Type="Edm.String" />
+          <Parameter Name="git_url" Type="Edm.String" Nullable="false" />
+          <Parameter Name="base_branch" Type="Edm.String" />
+          <Parameter Name="checkout_mode" Type="Edm.String" />
+          <Parameter Name="publish_mode" Type="Edm.String" />
+          <Parameter Name="publish_credential_ref" Type="Edm.String" />
+          <Parameter Name="validation_commands" Type="Edm.String" />
+          <Parameter Name="build_commands" Type="Edm.String" />
+          <Parameter Name="deploy_commands" Type="Edm.String" />
+          <Parameter Name="observation_commands" Type="Edm.String" />
+          <Parameter Name="preparation_commands" Type="Edm.String" />
+          <Parameter Name="computer_image" Type="Edm.String" />
+          <Parameter Name="setup_script" Type="Edm.String" />
+          <Parameter Name="cpu_cores" Type="Edm.String" />
+          <Parameter Name="memory_gb" Type="Edm.String" />
+          <Parameter Name="storage_gb" Type="Edm.String" />
+          <Parameter Name="source_credential_ref" Type="Edm.String" />
+          <Parameter Name="command_secret_bindings" Type="Edm.String" />
+          <Parameter Name="profile_digest" Type="Edm.String" />
+          <Parameter Name="updated_by" Type="Edm.String" />
+        </Action>
+
+        <Action Name="Activate" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryRepo" />
+        </Action>
+
+        <Action Name="Archive" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Temper.DarkFactory.FactoryRepo" />
+        </Action>
+      </EntityType>
+
       <EntityType Name="FactoryArtifact">
         <Key>
           <PropertyRef Name="Id" />
@@ -277,6 +390,7 @@
         <EntitySet Name="FactoryTasks" EntityType="Temper.DarkFactory.FactoryTask" />
         <EntitySet Name="FactoryConfigs" EntityType="Temper.DarkFactory.FactoryConfig" />
         <EntitySet Name="FactoryArtifacts" EntityType="Temper.DarkFactory.FactoryArtifact" />
+        <EntitySet Name="FactoryRepos" EntityType="Temper.DarkFactory.FactoryRepo" />
       </EntityContainer>
 
     </Schema>

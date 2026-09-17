@@ -1,0 +1,288 @@
+# Dark Factory — FactoryRepo (ADR-0069)
+#
+# A repository profile as a first-class, operator-managed entity: the
+# contract between a team and the dark factory. It declares the repository,
+# the command contract (validation / deploy / observation as typed
+# CommandSpec JSON arrays), the execution profile (image, sizing, setup),
+# and opaque credential *references* — never credential values (ADR-0066 D7,
+# ADR-0069 secret boundary).
+#
+# Command lists are JSON arrays of CommandSpec objects:
+#   validation_commands = '[{"argv":["cargo","test"],"cwd":"/work/repo","timeout_seconds":600}]'
+# build_commands chain before validation; preparation_commands run before
+# the checkout baseline commit; deploy/observation run in their own phases.
+# They render to deterministically quoted shell at the WASM layer
+# (factory-common commandspecs_to_shell) and run on the task's Computer
+# through governed Exec rows. Team text is never interpolated into a shell.
+#
+# Lifecycle: Draft → Active → Archived. Only Active profiles are selectable
+# for new work; a task pins a non-secret snapshot (plus digest/revision) on
+# its first Planning tick, so edits never retarget in-flight tasks.
+#
+# profile_revision bumps on every Update (counter effect); profile_digest is
+# writer-computed (sha256 over the canonical profile payload) so tasks and
+# audits can tell exactly which profile content was pinned.
+
+[automaton]
+name = "FactoryRepo"
+states = ["Draft", "Active", "Archived"]
+initial = "Draft"
+strict_action_params = true
+allow_indefinite_states = ["Draft", "Active", "Archived"]
+
+# -- Identity ------------------------------------------------------------------
+
+[[state]]
+name = "repo_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "display_name"
+type = "string"
+initial = ""
+
+[[state]]
+name = "description"
+type = "string"
+initial = ""
+
+[[state]]
+name = "team_id"
+type = "string"
+initial = ""
+
+# -- Source --------------------------------------------------------------------
+
+[[state]]
+name = "git_provider"
+type = "string"
+initial = "github"
+
+[[state]]
+name = "git_url"
+type = "string"
+initial = ""
+
+[[state]]
+name = "base_branch"
+type = "string"
+initial = "main"
+
+# "api"   — checkout via the GitHub Git Data API from factory WASM (private
+#           repos; the token never reaches the Computer).
+# "clone" — plain `git clone` inside the sandbox (public repos only).
+[[state]]
+name = "checkout_mode"
+type = "string"
+initial = "api"
+
+# -- Publication ---------------------------------------------------------------
+
+[[state]]
+name = "publish_mode"
+type = "string"
+initial = "local"
+
+# Opaque reference to the publish credential (host-side secret slot name).
+# Never a value; resolved only by the publish host function.
+[[state]]
+name = "publish_credential_ref"
+type = "string"
+initial = ""
+
+# -- Command contract (CommandSpec JSON arrays) ---------------------------------
+
+[[state]]
+name = "validation_commands"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "deploy_commands"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "observation_commands"
+type = "string"
+initial = "[]"
+
+# build_commands chain before validation_commands in the Validating Exec:
+# a compile failure is ordinary ValidationFailed evidence for the repair
+# loop. Artifacts persist in /work/repo for later deploy/observation.
+[[state]]
+name = "build_commands"
+type = "string"
+initial = "[]"
+
+# preparation_commands run on the Computer before the checkout baseline
+# commit — install/configure what the repo needs (toolchains, CLIs).
+# Fail-closed: a failing preparation command fails the checkout Exec.
+[[state]]
+name = "preparation_commands"
+type = "string"
+initial = "[]"
+
+# -- Execution profile -----------------------------------------------------------
+
+[[state]]
+name = "computer_image"
+type = "string"
+initial = ""
+
+[[state]]
+name = "setup_script"
+type = "string"
+initial = ""
+
+[[state]]
+name = "cpu_cores"
+type = "string"
+initial = "4"
+
+[[state]]
+name = "memory_gb"
+type = "string"
+initial = "8"
+
+[[state]]
+name = "storage_gb"
+type = "string"
+initial = "20"
+
+# -- Credential references (opaque; never values) --------------------------------
+
+[[state]]
+name = "source_credential_ref"
+type = "string"
+initial = ""
+
+# JSON object mapping CommandSpec.secret_binding_names entries to credential
+# references, e.g. '{"deploy_token":"secret:deploy/github"}'.
+[[state]]
+name = "command_secret_bindings"
+type = "string"
+initial = "{}"
+
+# -- Provenance ------------------------------------------------------------------
+
+[[state]]
+name = "profile_digest"
+type = "string"
+initial = ""
+
+[[state]]
+name = "created_by"
+type = "string"
+initial = ""
+
+[[state]]
+name = "updated_by"
+type = "string"
+initial = ""
+
+[[state]]
+name = "profile_revision"
+type = "counter"
+initial = "0"
+
+# -- Actions ---------------------------------------------------------------------
+#
+# The spec language gives one action exactly one target state, so the ADR's
+# "Update (Draft|Active -> same state)" is two actions with identical params:
+# Revise edits a Draft, Update edits an Active profile. Both bump
+# profile_revision and take a fresh writer-computed profile_digest.
+
+[[action]]
+name = "Revise"
+kind = "input"
+from = ["Draft"]
+to = "Draft"
+params = [
+  "display_name",
+  "description",
+  "team_id",
+  "git_provider",
+  "git_url",
+  "base_branch",
+  "checkout_mode",
+  "publish_mode",
+  "publish_credential_ref",
+  "validation_commands",
+  "build_commands",
+  "deploy_commands",
+  "observation_commands",
+  "preparation_commands",
+  "computer_image",
+  "setup_script",
+  "cpu_cores",
+  "memory_gb",
+  "storage_gb",
+  "source_credential_ref",
+  "command_secret_bindings",
+  "profile_digest",
+  "updated_by",
+]
+hint = "Edit a Draft profile. Bumps profile_revision; the writer supplies a fresh profile_digest."
+effect = [{ type = "increment", var = "profile_revision" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "git_url"
+
+[[action]]
+name = "Update"
+kind = "input"
+from = ["Active"]
+to = "Active"
+params = [
+  "display_name",
+  "description",
+  "team_id",
+  "git_provider",
+  "git_url",
+  "base_branch",
+  "checkout_mode",
+  "publish_mode",
+  "publish_credential_ref",
+  "validation_commands",
+  "build_commands",
+  "deploy_commands",
+  "observation_commands",
+  "preparation_commands",
+  "computer_image",
+  "setup_script",
+  "cpu_cores",
+  "memory_gb",
+  "storage_gb",
+  "source_credential_ref",
+  "command_secret_bindings",
+  "profile_digest",
+  "updated_by",
+]
+hint = "Update an Active profile. Bumps profile_revision; the writer supplies a fresh profile_digest. In-flight tasks keep their pinned snapshot."
+effect = [{ type = "increment", var = "profile_revision" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "git_url"
+
+[[action]]
+name = "Activate"
+kind = "input"
+from = ["Draft"]
+to = "Active"
+hint = "Make the profile selectable for new work."
+
+[[action]]
+name = "Archive"
+kind = "input"
+from = ["Active"]
+to = "Archived"
+hint = "Retire the profile. Existing tasks keep their pinned snapshots."
+
+[[invariant]]
+name = "ArchivedIsFinal"
+when = ["Archived"]
+assert = "no_further_transitions"

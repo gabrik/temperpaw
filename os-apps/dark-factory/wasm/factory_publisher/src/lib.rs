@@ -22,11 +22,12 @@
 //! (kind="patch") so the console diff pane works without a sidecar store
 //! (ADR-0067 D8); artifact create is best-effort and never fails a publish.
 //!
-//! Merge ordering (ADR-0067 D7, observe-before-merge): the `Merging` phase
-//! only RECORDS the deployed approved head (`RecordMerged` with
-//! merge_sha = head_sha; the PR stays open). The actual GitHub merge runs in
-//! the `FinalizingMerge` phase — entered only after observation passes —
-//! and reports `MergeFinalized` with the real merge commit SHA. In local
+//! Deploy ordering (ADR-0067 D7 observe-before-merge, ADR-0069 real
+//! Deploying phase): `factory_deployer` runs the profile's deploy_commands
+//! (or passes through when none are declared) and records `RecordDeployed`
+//! with merge_sha = head_sha; the PR stays open. The actual GitHub merge
+//! runs in the `FinalizingMerge` phase — entered only after observation
+//! passes — and reports `MergeFinalized` with the real merge commit SHA. In local
 //! mode FinalizingMerge reports merge_commit_sha = merge_sha immediately.
 //!
 //! Text files only in v1 — a non-UTF-8 changed file fails loudly with its
@@ -165,7 +166,13 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     let computer_id = required(fields, "computer_id")?;
     let operation_key = required(fields, "operation_key")?;
     let operation_owner = required(fields, "operation_owner")?;
-    let factory_id = required(fields, "factory_id")?;
+    // ADR-0069: repo-selected tasks carry factory_repo_id; legacy tasks
+    // carry factory_id. At least one is required.
+    let factory_repo_id = field_or(fields, "factory_repo_id", "");
+    let factory_id = field_or(fields, "factory_id", "");
+    if factory_repo_id.trim().is_empty() && factory_id.trim().is_empty() {
+        return Err("task has neither factory_repo_id nor factory_id".into());
+    }
     let task_prompt = required(fields, "task_prompt")?;
     let branch_name = required(fields, "branch_name")?;
     let base_sha = required(fields, "base_sha")?;
@@ -180,8 +187,9 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         .unwrap_or("PublishingPR")
         .to_string();
 
-    let config = factory_common::get_entity(ctx, "FactoryConfigs", &factory_id, fields)?;
-    let cfg = config.get("fields").cloned().unwrap_or(json!({}));
+    // ADR-0069: publish_mode comes from the pinned profile (or the legacy
+    // FactoryConfig row).
+    let cfg = factory_common::load_profile(ctx, fields, fields)?;
     let publish_mode = field_or(&cfg, "publish_mode", "local");
 
     ctx.log(
@@ -189,27 +197,15 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         &format!("factory_publisher: tick task={task_id} mode={publish_mode} branch={branch_name} ticks={phase_ticks}"),
     );
 
-    if status == "Merging" {
-        // ADR-0067 D7: deploy-record only. The PR stays OPEN; the GitHub
-        // merge runs in FinalizingMerge after observation passes.
-        let short_head = factory_common::truncate(&head_sha, 12);
-        let result = if publish_mode == "github" {
-            format!("deployed approved head {short_head}; the PR stays open until observation passes")
-        } else {
-            format!("simulated merge/deploy of approved head {short_head}")
-        };
-        set_success_result(
-            "RecordMerged",
-            &deploy_record_params(
-                &task_id,
-                &head_sha,
-                &result,
-                repair_round,
-                phase_ticks,
-                &operation_key,
-                &operation_owner,
-            ),
+    if status == "Deploying" {
+        // ADR-0069: the Deploy phase is owned by factory_deployer
+        // (CheckDeploying). The publisher's triggers never fire in
+        // Deploying; guard anyway so a stray dispatch is a no-op.
+        ctx.log(
+            "info",
+            &format!("factory_publisher: task={task_id} is Deploying — factory_deployer owns this phase"),
         );
+        set_success_result("", &json!({}));
         return Ok(());
     }
 
@@ -530,14 +526,8 @@ fn run_finalize_tick(
         return Ok(());
     }
 
-    let factory_id = required(ctx.entity_state.get("fields").unwrap(), "factory_id")?;
-    let config = factory_common::get_entity(
-        ctx,
-        "FactoryConfigs",
-        &factory_id,
-        ctx.entity_state.get("fields").unwrap(),
-    )?;
-    let cfg = config.get("fields").cloned().unwrap_or(json!({}));
+    // ADR-0069: profile from the pinned snapshot (or legacy FactoryConfig).
+    let cfg = factory_common::load_profile(ctx, ctx.entity_state.get("fields").unwrap(), ctx.entity_state.get("fields").unwrap())?;
     let repo_url = field_or(&cfg, "repo_url", "");
     let slug = factory_common::github_repo_slug(&repo_url)?;
     let pr_number = pr_number_from_url(pull_request_url)?;
@@ -623,29 +613,6 @@ fn run_finalize_tick(
     Ok(())
 }
 
-/// RecordMerged params (Merging phase): pins the deployed approved head as
-/// merge_sha and mints the operation key for the observation phase. No
-/// GitHub calls happen in this phase (ADR-0067 D7).
-fn deploy_record_params(
-    task_id: &str,
-    head_sha: &str,
-    operation_result: &str,
-    repair_round: u64,
-    phase_ticks: u64,
-    expected_operation_key: &str,
-    expected_operation_owner: &str,
-) -> Value {
-    json!({
-        "merge_sha": head_sha,
-        "operation_result": operation_result,
-        "expected_operation_key": expected_operation_key,
-        "expected_operation_owner": expected_operation_owner,
-        "operation_key": factory_common::mint_operation_key(task_id, "observe", repair_round, phase_ticks),
-        "operation_owner": "factory_publisher",
-        "phase_ticks": 0,
-    })
-}
-
 /// MergeFinalized params (FinalizingMerge phase): the real merge commit
 /// SHA plus the operation fences. Terminal — no fresh key is minted.
 fn finalize_params(
@@ -724,21 +691,6 @@ mod tests {
         );
         assert!(pr_number_from_url("local://dark-factory/x").is_err());
         assert!(pr_number_from_url("https://github.com/o/r").is_err());
-    }
-
-    #[test]
-    fn deploy_record_pins_approved_head_and_mints_observe_key() {
-        let p = deploy_record_params("task-1", "head123", "deployed approved head", 2, 7, "key-m", "owner-m");
-        assert_eq!(p["merge_sha"], "head123");
-        assert_eq!(p["operation_result"], "deployed approved head");
-        assert_eq!(p["expected_operation_key"], "key-m");
-        assert_eq!(p["expected_operation_owner"], "owner-m");
-        assert_eq!(p["operation_owner"], "factory_publisher");
-        assert!(
-            p["operation_key"].as_str().unwrap().contains("task-1:observe:r2:t"),
-            "{}", p["operation_key"]
-        );
-        assert_eq!(p["phase_ticks"], 0);
     }
 
     #[test]

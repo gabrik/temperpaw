@@ -23,6 +23,13 @@ permit(
     resource is FactoryConfig
 );
 
+// ADR-0069: FactoryRepo profiles are operator-managed.
+permit(
+    principal is Admin,
+    action,
+    resource is FactoryRepo
+);
+
 // Read/list are open within the tenant (API access is already
 // credential-gated); the console and the factory modules both read rows.
 permit(
@@ -41,6 +48,17 @@ permit(
         Action::"list"
     ],
     resource is FactoryConfig
+);
+
+// Read/list FactoryRepos is open within the tenant (console selector +
+// modules reading profiles); writes are Admin-only below.
+permit(
+    principal,
+    action in [
+        Action::"read",
+        Action::"list"
+    ],
+    resource is FactoryRepo
 );
 
 // ADR-0068: the console subscribes to the tenant-scoped entity event feed
@@ -82,11 +100,12 @@ permit(
     principal,
     action in [
         Action::"FactoryTask.SubmitPlan", Action::"SubmitPlan",
+        Action::"FactoryTask.PinRepoProfile", Action::"PinRepoProfile",
         Action::"FactoryTask.SubmitImplementation", Action::"SubmitImplementation",
         Action::"FactoryTask.ValidationPassed", Action::"ValidationPassed",
         Action::"FactoryTask.ValidationFailed", Action::"ValidationFailed",
         Action::"FactoryTask.PublishPullRequest", Action::"PublishPullRequest",
-        Action::"FactoryTask.RecordMerged", Action::"RecordMerged",
+        Action::"FactoryTask.RecordDeployed", Action::"RecordDeployed",
         Action::"FactoryTask.ObservationPassed", Action::"ObservationPassed",
         Action::"FactoryTask.ObservationFailed", Action::"ObservationFailed",
         Action::"FactoryTask.MergeFinalized", Action::"MergeFinalized",
@@ -106,7 +125,7 @@ permit(
         Action::"FactoryTask.CheckImplementing", Action::"CheckImplementing",
         Action::"FactoryTask.CheckValidating", Action::"CheckValidating",
         Action::"FactoryTask.CheckPublishing", Action::"CheckPublishing",
-        Action::"FactoryTask.CheckMerging", Action::"CheckMerging",
+        Action::"FactoryTask.CheckDeploying", Action::"CheckDeploying",
         Action::"FactoryTask.CheckObserving", Action::"CheckObserving",
         Action::"FactoryTask.CheckFinalizing", Action::"CheckFinalizing",
         Action::"FactoryTask.ExpireTask", Action::"ExpireTask"
@@ -123,12 +142,26 @@ permit(
         Action::"FactoryTask.CheckImplementing", Action::"CheckImplementing",
         Action::"FactoryTask.CheckValidating", Action::"CheckValidating",
         Action::"FactoryTask.CheckPublishing", Action::"CheckPublishing",
-        Action::"FactoryTask.CheckMerging", Action::"CheckMerging",
+        Action::"FactoryTask.CheckDeploying", Action::"CheckDeploying",
         Action::"FactoryTask.CheckObserving", Action::"CheckObserving",
         Action::"FactoryTask.CheckFinalizing", Action::"CheckFinalizing",
         Action::"FactoryTask.ExpireTask", Action::"ExpireTask"
     ],
     resource is FactoryTask
+);
+
+// FactoryRepo rows are operator-managed: create + lifecycle actions are
+// Admin-only (ADR-0069).
+permit(
+    principal is Admin,
+    action in [
+        Action::"create",
+        Action::"FactoryRepo.Revise", Action::"Revise",
+        Action::"FactoryRepo.Update", Action::"Update",
+        Action::"FactoryRepo.Activate", Action::"Activate",
+        Action::"FactoryRepo.Archive", Action::"Archive"
+    ],
+    resource is FactoryRepo
 );
 
 // FactoryArtifact rows (ADR-0067 D8): read/list are open within the tenant
@@ -175,7 +208,7 @@ permit(
     action == Action::"http_call",
     resource is HttpEndpoint
 ) when {
-    ["factory_planner", "factory_implementer", "factory_validator", "factory_publisher", "factory_janitor"].contains(context.module)
+    ["factory_planner", "factory_implementer", "factory_validator", "factory_publisher", "factory_deployer", "factory_janitor"].contains(context.module)
 };
 
 // Allow the factory modules to access secrets (temper_api_url, sandbox
@@ -185,5 +218,5 @@ permit(
     action == Action::"access_secret",
     resource is Secret
 ) when {
-    ["factory_planner", "factory_implementer", "factory_validator", "factory_publisher", "factory_janitor"].contains(context.module)
+    ["factory_planner", "factory_implementer", "factory_validator", "factory_publisher", "factory_deployer", "factory_janitor"].contains(context.module)
 };

@@ -15,7 +15,7 @@ export const STAGES = [
   ["Validating", "Validating"],
   ["PublishingPR", "Preparing review"],
   ["AwaitingMergeApproval", "Code approval"],
-  ["Merging", "Deploy"],
+  ["Deploying", "Deploy"],
   ["Observing", "Observing"],
   ["FinalizingMerge", "Finalize merge"],
   // GB feedback: the rail concludes with Finalize merge (10 steps).
@@ -25,6 +25,16 @@ export const STAGES = [
 
 export function shortId(value = "") {
   return String(value).replace(/^en-/, "").slice(0, 8);
+}
+
+// ADR-0069: the pinned FactoryRepo profile on a task, for the detail header.
+// Returns null for legacy FactoryConfig tasks (no pin).
+export function pinnedProfileSummary(fields = {}) {
+  const digest = String(fields.repo_profile_digest ?? "");
+  if (!digest) return null;
+  const revision = String(fields.repo_profile_revision ?? "0");
+  const hex = digest.replace(/^sha256:/, "").slice(0, 12);
+  return `profile rev ${revision} · ${hex}`;
 }
 
 export function stageIndex(status) {

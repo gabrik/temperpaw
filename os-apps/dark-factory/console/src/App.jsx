@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ensureSession, openFactoryEventStream } from "./api.js";
-import { STAGES, toTaskView, toTaskList, toActivityEvents, latestPatch, gateDecision, shortId, stageIndex, toProvisioningSteps, shouldRefreshForEvent } from "./view-model.js";
+import { STAGES, toTaskView, toTaskList, toActivityEvents, latestPatch, gateDecision, shortId, stageIndex, toProvisioningSteps, shouldRefreshForEvent, pinnedProfileSummary } from "./view-model.js";
 
 const STATUS_COPY = {
   Requested: "Your request is queued for the factory.",
@@ -10,7 +10,7 @@ const STATUS_COPY = {
   Validating: "The configured test and lint commands are running in the sandbox.",
   PublishingPR: "The validated change-set is being published for review.",
   AwaitingMergeApproval: "Review the exact published head before deploy and observation.",
-  Merging: "The approved head is recorded as the deploy candidate; the pull request stays open.",
+  Deploying: "The deploy phase is running the profile's deploy commands (or recording the approved head when none are declared). The PR merges only after observation passes.",
   Observing: "Observation commands are running against the approved head. The PR is merged only if they pass.",
   FinalizingMerge: "Observation passed — the pull request is being merged.",
   Completed: "The approved change passed observation and the pull request was merged. The task is complete.",
@@ -78,6 +78,9 @@ function StageRail({ task }) {
         </div>
       </div>
       <p className="status-description">{STATUS_COPY[task.Status] ?? "Temper is processing this task."}</p>
+      {pinnedProfileSummary(task.fields ?? {}) && (
+        <p className="profile-pin">{pinnedProfileSummary(task.fields ?? {})}</p>
+      )}
       <div className="stage-rail">
         {STAGES.map(([state, label], index) => {
           const active = state === task.Status;
@@ -224,12 +227,28 @@ function Activity({ logs = [], steps = [] }) {
   );
 }
 
-function NewTask({ factories, onCreate, busy, onCancel, hasTasks }) {
+function NewTask({ factories, repos, onCreate, busy, onCancel, hasTasks }) {
   const [request, setRequest] = useState("");
-  const [factoryId, setFactoryId] = useState(factories[0]?.entity_id ?? "");
+  // ADR-0069: FactoryRepo profiles are the preferred target; legacy
+  // FactoryConfigs remain selectable until migrated.
+  const options = [
+    ...(repos ?? []).map((repo) => ({
+      key: `repo:${repo.entity_id}`,
+      label: `${repo.fields?.display_name || repo.fields?.git_url} · profile`,
+    })),
+    ...(factories ?? []).map((factory) => ({
+      key: `config:${factory.entity_id}`,
+      label: `${factory.fields?.repo_url} · legacy config`,
+    })),
+  ];
+  const [target, setTarget] = useState("");
+  const chosen = target || options[0]?.key || "";
   async function submit(event) {
     event.preventDefault();
-    if (request.trim() && factoryId) await onCreate({ factoryId, prompt: request.trim() });
+    if (!request.trim() || !chosen) return;
+    const repoId = chosen.startsWith("repo:") ? chosen.slice(5) : "";
+    const factoryId = chosen.startsWith("config:") ? chosen.slice(7) : "";
+    await onCreate({ factoryId, repoId, prompt: request.trim() });
   }
   return (
     <section className="new-request-shell">
@@ -240,16 +259,13 @@ function NewTask({ factories, onCreate, busy, onCancel, hasTasks }) {
       </div>
       <form className="request-card" onSubmit={submit}>
         <div className="request-avatar">You</div>
-        <select className="factory-picker" value={factoryId} onChange={(event) => setFactoryId(event.target.value)}>
-          {factories.map((factory) => {
-            const fields = factory.fields ?? {};
-            return (
-              <option key={factory.entity_id} value={factory.entity_id}>
-                {fields.repo_url} · {fields.publish_mode}
-              </option>
-            );
-          })}
-          {!factories.length && <option value="">No active FactoryConfigs — create one first</option>}
+        <select className="factory-picker" value={chosen} onChange={(event) => setTarget(event.target.value)}>
+          {options.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+          {!options.length && <option value="">No active FactoryRepos or FactoryConfigs — bootstrap one first</option>}
         </select>
         <textarea
           rows={7}
@@ -262,7 +278,7 @@ function NewTask({ factories, onCreate, busy, onCancel, hasTasks }) {
           <span>Two human approvals · real Temper state · governed sandbox execution</span>
           <div>
             {hasTasks && <button type="button" className="button ghost" onClick={onCancel}>Cancel</button>}
-            <button className="button primary" disabled={busy || !request.trim() || !factoryId}>{busy ? "Creating…" : "Start factory"}</button>
+            <button className="button primary" disabled={busy || !request.trim() || !chosen}>{busy ? "Creating…" : "Start factory"}</button>
           </div>
         </div>
       </form>
@@ -274,6 +290,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [factories, setFactories] = useState([]);
+  const [repos, setRepos] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [selectedId, setSelectedId] = useState("");
   const [bundle, setBundle] = useState(null);
@@ -302,6 +319,8 @@ export default function App() {
         setAuthChecked(true);
         const factoryRows = await api.listFactories().catch(() => []);
         setFactories(factoryRows);
+        const repoRows = await api.listRepos().catch(() => []);
+        setRepos(repoRows);
         return loadTasks();
       })
       .catch((sessionError) => {
@@ -390,12 +409,13 @@ export default function App() {
     return task.task_prompt.length > 76 ? `${task.task_prompt.slice(0, 76)}…` : task.task_prompt;
   }, [task?.task_prompt]);
 
-  async function createTask({ factoryId, prompt }) {
+  async function createTask({ factoryId, repoId, prompt }) {
     setCreating(true);
     setError("");
     try {
       const result = await api.createTask({
         factoryId,
+        repoId,
         prompt,
         owner: user?.email ?? "console",
         operationKey: crypto.randomUUID(),
@@ -464,6 +484,7 @@ export default function App() {
         {showNewTask ? (
           <NewTask
             factories={factories}
+            repos={repos}
             onCreate={createTask}
             busy={creating}
             onCancel={() => setShowNewTask(false)}

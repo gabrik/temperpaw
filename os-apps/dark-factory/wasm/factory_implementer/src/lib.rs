@@ -120,6 +120,17 @@ fn decide_tick(
 const GIT_IDENTITY: &str = "-c user.email=factory@darkfactory.local -c user.name=dark-factory";
 
 /// Step 1 exec: initialise the pristine base the module just wrote.
+/// repo_url from the effective profile (pinned FactoryRepo snapshot or
+/// legacy FactoryConfig row) — both use the flat key `repo_url`.
+fn profile_repo_url(profile: &Value) -> Result<String, String> {
+    profile
+        .get("repo_url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "profile is missing repo_url".to_string())
+}
+
 fn checkout_command() -> String {
     // F21: the planner shares {REPO_WORKDIR} and pre-commits the pristine
     // base, so this commit is an idempotency no-op in the normal path —
@@ -206,7 +217,6 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         let computer_id = required(&fields, "computer_id")?;
         let operation_key = required(&fields, "operation_key")?;
         let operation_owner = required(&fields, "operation_owner")?;
-        let factory_id = required(&fields, "factory_id")?;
         let task_prompt = required(&fields, "task_prompt")?;
         let plan_text = field_or(&fields, "plan_text", "");
         let repair_context = field_or(&fields, "repair_context", "");
@@ -256,12 +266,11 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                 set_success_result("", &json!({}));
             }
             TickDecision::StartCheckout => {
-                let config = factory_common::get_entity(&ctx, "FactoryConfigs", &factory_id, &fields)?;
-                let repo_url = config
-                    .pointer("/fields/repo_url")
-                    .and_then(|v| v.as_str())
-                    .ok_or("FactoryConfig is missing repo_url")?;
-                let slug = factory_common::github_repo_slug(repo_url)?;
+                // ADR-0069: the effective profile is the pinned FactoryRepo
+                // snapshot (or legacy FactoryConfig row) via load_profile.
+                let profile = factory_common::load_profile(&ctx, &fields, &fields)?;
+                let repo_url = profile_repo_url(&profile)?;
+                let slug = factory_common::github_repo_slug(&repo_url)?;
                 ctx.log("info", &format!(
                     "factory_implementer: task {task_id} checkout of {slug}@{checkout_sha} into {computer_id}"
                 ));
@@ -565,7 +574,16 @@ mod tests {
 // already-committed as success — commit only when there are staged changes.
 #[cfg(test)]
 mod f21_tests {
-    use super::checkout_command;
+    use super::{checkout_command, profile_repo_url};
+    use serde_json::json;
+
+    #[test]
+    fn profile_repo_url_reads_flat_key() {
+        let profile = json!({"repo_url": "https://github.com/acme/repo"});
+        assert_eq!(profile_repo_url(&profile).unwrap(), "https://github.com/acme/repo");
+        assert!(profile_repo_url(&json!({})).is_err());
+        assert!(profile_repo_url(&json!({"repo_url": "  "})).is_err());
+    }
 
     #[test]
     fn checkout_command_tolerates_already_committed_base() {

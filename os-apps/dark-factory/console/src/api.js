@@ -71,6 +71,14 @@ export const api = {
     return (payload.value ?? []).filter((row) => (row.fields?.Status ?? row.status) === "Active");
   },
 
+  // ADR-0069: repository profiles are the preferred task target. Only Active
+  // profiles are selectable (spec lifecycle); the planner pins a snapshot of
+  // the chosen profile on the task's first Planning tick.
+  listRepos: async () => {
+    const payload = await request(collection("FactoryRepos"));
+    return (payload.value ?? []).filter((row) => (row.fields?.Status ?? row.status) === "Active");
+  },
+
   listTasks: () => request(collection("FactoryTasks")),
 
   getTask: (taskId) => request(entity("FactoryTasks", taskId)),
@@ -103,7 +111,7 @@ export const api = {
 
   // Create flow (ADR-0067): create the row, then StartPlanning with the
   // prompt + chosen factory. The planner self-creates the Computer.
-  async createTask({ factoryId, prompt, owner, operationKey }) {
+  async createTask({ factoryId, repoId, prompt, owner, operationKey }) {
     const created = await request(collection("FactoryTasks"), {
       method: "POST",
       body: { created_by: owner },
@@ -113,7 +121,8 @@ export const api = {
       method: "POST",
       body: {
         task_prompt: prompt,
-        factory_id: factoryId,
+        factory_id: factoryId ?? "",
+        factory_repo_id: repoId ?? "",
         computer_id: "",
         operation_key: operationKey,
         operation_owner: owner,

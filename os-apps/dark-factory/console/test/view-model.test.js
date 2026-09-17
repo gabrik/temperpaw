@@ -16,6 +16,7 @@ import {
   gateDecision,
   shortId,
   stageIndex,
+  pinnedProfileSummary,
   formatPiEventLine,
   renderExecStream,
   formatActivityLabel,
@@ -181,7 +182,7 @@ test("STAGES is the 10-step rail concluding with Finalize merge", () => {
     "Validating",
     "PublishingPR",
     "AwaitingMergeApproval",
-    "Merging",
+    "Deploying",
     "Observing",
     "FinalizingMerge",
   ]) {
@@ -193,6 +194,18 @@ test("Completed maps off-rail so StageRail renders every step done", () => {
   assert.equal(stageIndex("Completed"), -1);
   assert.equal(stageIndex("Failed"), -1);
   assert.equal(stageIndex("FinalizingMerge"), STAGES.length - 1);
+});
+
+test("pinnedProfileSummary renders revision + short digest from task fields", () => {
+  assert.equal(
+    pinnedProfileSummary({ repo_profile_revision: "3", repo_profile_digest: "sha256:e15cf399013cdf11f3b69f89" }),
+    "profile rev 3 · e15cf399013c",
+  );
+  // Digest without the sha256: prefix still shortens.
+  assert.equal(pinnedProfileSummary({ repo_profile_revision: "1", repo_profile_digest: "abcdef0123456789" }), "profile rev 1 · abcdef012345");
+  // No pin → null (legacy FactoryConfig tasks).
+  assert.equal(pinnedProfileSummary({ repo_profile_digest: "" }), null);
+  assert.equal(pinnedProfileSummary({}), null);
 });
 
 test("shortId strips the en- prefix noise for display", () => {
@@ -309,7 +322,7 @@ test("toActivityEvents defaults missing tails to empty strings", () => {
 describe("shouldRefreshForEvent (live activity feed)", () => {
   it("refreshes on FactoryTask transitions", () => {
     assert.equal(
-      shouldRefreshForEvent({ entity_type: "FactoryTask", action: "ApproveMerge", status: "Merging" }),
+      shouldRefreshForEvent({ entity_type: "FactoryTask", action: "ApproveMerge", status: "Deploying" }),
       true,
     );
   });
