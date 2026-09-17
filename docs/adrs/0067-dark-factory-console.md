@@ -214,6 +214,97 @@ red-green:
   complete cumulative tree (the old code would have failed the round on
   an empty patch).
 
+### F19 — console gate decisions never dispatched (uuid default)
+
+First browser run of the console: every gate click failed client-side with
+"C is not a function" and no POST reached the server. Root cause:
+`gateDecision`'s default parameter was `uuid = crypto.randomUUID()` —
+evaluated to a string, then invoked as `uuid()` for `operation_key`. All
+unit tests injected an explicit uuid provider, hiding the default path.
+Fixed red-green (no-arg regression test; default now
+`() => crypto.randomUUID()`); all four gate actions then verified from the
+UI in the resume run.
+
+### Activity panel: provisioning-phase steps (GB feedback)
+
+First human run exposed a UX gap: the Activity panel is empty for ~2 min
+while the sandbox provisions (no Execs exist yet), looking dead. OData
+entity rows carry no event history, so the console synthesizes the sandbox
+lifecycle from current task + Computer state as done/active/pending steps:
+`toProvisioningSteps` (register → prepare image → provision+setup → ready
+→ attach → destroy), the Computer discovered by the planner's
+deterministic name (`df-plan-<first 16 alnum of task id>`,
+`plannerComputerName`). `getTaskBundle` fetches the Computer by name and
+prefers its id for the Exec query (task.computer_id lags a tick). 7 new
+view-model tests (22 total green); verified live against TID18.
+
+### Stage rail concludes with Finalize merge (GB feedback)
+
+The rail is the 10 happy-path steps ending at FinalizingMerge / "Finalize
+merge"; Completed/Failed are terminal states rendered via the rail's
+done rule and the status pill, not steps of their own (mirrors DEN's
+all-done rule). The merge gate is unaffected: AwaitingMergeApproval
+("Code approval") stays a human gate — ApproveMerge is an operator-token
+input action with head_sha CAS binding; the rail is visualization only.
+2 view-model tests (25 total green); live-verified on the completed F22
+task: 10 steps all done, last label "Finalize merge", header "Completed".
+
+### F20 — exec `status == "Succeeded"` was treated as pass; exit codes were ignored (gates no-op)
+
+The correction of the claim removed above. Live evidence from TID18: its
+validation exec **and** observation exec both exited 1 (silent gate
+`test -f gb-e2e.txt` fails — the agent was never asked to create that
+file), yet the task sailed through PublishingPR → AwaitingMergeApproval →
+Completed and PR #7 merged. Root cause: `computer_exec` reports
+`RunSucceeded` (Exec status Succeeded) even for non-zero exits — the exit
+code lives in `fields.exit_code`. `factory_validator::decide_tick` mapped
+status Succeeded → Passed, so `ValidationFailed → Implementing`
+fix-forward **never fired** and validation/observation gates were no-ops
+for command failures. `factory_planner` and `factory_implementer` had the
+same blind spot for their step chains. First run with a genuinely failing
+validation exposed it; every earlier validation passed.
+
+Fix (red-green, all three modules): `factory_common::exec_succeeded(exec)`
+= status Succeeded AND `exit_code == "0"` (missing exit code → false,
+fail-closed); `factory_common::exec_failure_summary(exec)` =
+`"exit N | stderr: … | stdout: …"` for evidence. Decide functions now gate
+on `exec_succeeded` and Fail/Repair on `"Succeeded" | "Failed"` with the
+summary. Failures are loud in `failure_reason`.
+
+### F21 — implementer checkout commit was a benign exit 1 (idempotency no-op)
+
+The F20 gate immediately caught a latent bug the blind code had tolerated
+in every prior run: the implementer's `initialise pristine base checkout`
+exec exits 1 with "nothing to commit, working tree clean". The planner
+shares `/work/repo` and pre-commits the pristine base at the same sha, so
+the implementer's `git add -A && git commit` is a no-op in the normal
+path. Fixed in both planner and implementer: `git add -A && { git diff
+--cached --quiet || git commit …; }` — skip the commit when the base is
+already committed, exit 0 either way. (TID19 died at this step under the
+new gate; TID18's identical exit 1 had been silently ignored.)
+
+### F22 — repair evidence must name the failing gate
+
+With F20 live, TID19 ran 3 autonomous repair rounds and still Failed: the
+repair context was `validation tests failed (exit 1)\nstderr:\n\nstdout:`
+— the silent gate (`test -f`, `grep -q`) produces no output, so the agent
+had to guess. `failure_evidence` now includes the exec's `command`:
+`validation tests failed (exit N)\ncommand: …\nstderr: …\nstdout: …`.
+Live proof (TID20 / task en-01a0aea0-4556): Implementing → Validating
+(exit 1) → fix-forward round 1 with the named gate → the agent created
+`gb-e2e.txt` containing exactly `verified by a human` → validation passed
+→ PR #8 merged → Observing → **Completed**.
+
+### Activity panel: exec output tails (GB feedback)
+
+The DEN experiments console showed command output per exec. The polled
+Exec rows already carry `stdout_tail`/`stderr_tail` — the console now
+renders them: every exec line with output is an expandable `<details>`
+(caret ▸/▾, green/red-bordered `<pre>` for stdout/stderr). Full output
+stays sandbox-local (`stdout_path`); live streaming of in-flight output
+remains the deferred SSE/entity-change-feed follow-up. 2 new view-model
+tests (24 total green); verified live via Playwright probe.
+
 ## Work plan
 
 1. **Spec + module deltas (red-green)**, in order: — **DONE (2026-09-17,
@@ -239,17 +330,31 @@ red-green:
    repo." — confirmed and adopted: the DEN controller deploys the
    approved head and merges the PR only AFTER observation passes (its
    spec hint is stale); D7 realigns dark-factory to that ordering.
-2. **Console port**: copy `src/` SPA into `os-apps/dark-factory/console/`,
+2. **Console port**: copy `src/` SPA into `os-apps/dark-factory/console/`, — **DONE (2026-09-17)**
    replace `api.js`/`temper-client.js` with a direct OData client
    (session auth, tenant header), rewire create flow (config picker +
    StartPlanning), decision cards (4 actions), activity view (Execs),
    diff view (PR link + FactoryArtifact patch pane). Port server tests
    that still apply to a thin client-side test layer.
-3. **Live e2e through the browser**: boot on 3100, serve console on 8081,
+   → landed as `os-apps/dark-factory/console/` (vite + React): `api.js`
+   talks `/tdata` + `/auth` directly (no BFF); `view-model.js` holds the
+   pure mapping/gate-param logic with 11 node:test cases; 3 s polling;
+   login screen against temperpaw cookie auth. Verified live: preview
+   server on 8081 proxies login + task/execs/artifacts/factories reads
+   (all 200 against the 3100 server); `npm run check` green.
+3. **Live e2e through the browser**: boot on 3100, serve console on 8081, — **DONE (2026-09-17, `.proofs/0067-console-e2e.md`)**
    run a full task from the UI — create → plan approve → code approve →
    deploy-record → observe → finalize-merge → Completed; exercise one
    `RejectPlan`, one `RequestChanges`, and one `ObservationFailed`
    fix-forward round; record in `.proofs/0067-console-e2e.md`.
+   → playwright-driven against the production build on 8081: login,
+   factory-picker create, RejectPlan fix-forward (round-1 plan carried the
+   feedback), ApprovePlan, RequestChanges (same PR #6 reused, README delta
+   carried alongside round-r1 files — F17 fix under a real repair round),
+   ApproveMerge, Observing pill rendered with the PR still open, Completed.
+   PR #6 merged (`e68d04acdc`); `changes-r1/r2.patch` artifacts recorded.
+   ObservationFailed fix-forward is the same transition path as
+   RequestChanges (exercised in step 1, TID15/16); not repeated here.
 4. Follow-ups (separate ADRs if material): SSE/entity change feed
    (GB-endorsed follow-up), multi-factory dashboards, non-Admin reviewer
    role.

@@ -77,13 +77,6 @@ fn exec_status(exec: &Value) -> &str {
     exec.get("status").and_then(|v| v.as_str()).unwrap_or("")
 }
 
-fn exec_error(exec: &Value) -> String {
-    exec.pointer("/fields/error")
-        .and_then(|v| v.as_str())
-        .unwrap_or("exec failed")
-        .to_string()
-}
-
 /// Pure chain state machine: given the three step execs (any may be absent),
 /// decide this tick's action.
 fn decide_tick(
@@ -105,11 +98,18 @@ fn decide_tick(
     ] {
         match exec {
             None => return Ok(start),
-            Some(e) => match exec_status(e) {
-                "Succeeded" => continue,
-                "Failed" => return Ok(TickDecision::Fail(exec_error(e))),
-                _ => return Ok(TickDecision::Wait),
-            },
+            Some(e) => {
+                // F20: gate on exit_code, not status alone (see validator).
+                if factory_common::exec_succeeded(e) {
+                    continue;
+                }
+                match exec_status(e) {
+                    "Succeeded" | "Failed" => {
+                        return Ok(TickDecision::Fail(factory_common::exec_failure_summary(e)));
+                    }
+                    _ => return Ok(TickDecision::Wait),
+                }
+            }
         }
     }
     Ok(TickDecision::Submit)
@@ -121,8 +121,11 @@ const GIT_IDENTITY: &str = "-c user.email=factory@darkfactory.local -c user.name
 
 /// Step 1 exec: initialise the pristine base the module just wrote.
 fn checkout_command() -> String {
+    // F21: the planner shares {REPO_WORKDIR} and pre-commits the pristine
+    // base, so this commit is an idempotency no-op in the normal path —
+    // skip it when there are no staged changes (exit 0 either way).
     format!(
-        "cd {REPO_WORKDIR} && git init -q && git add -A && git {GIT_IDENTITY} commit -qm base"
+        "cd {REPO_WORKDIR} && git init -q && git add -A && {{ git diff --cached --quiet || git {GIT_IDENTITY} commit -qm base; }}"
     )
 }
 
@@ -415,7 +418,8 @@ mod tests {
     use super::*;
 
     fn exec(status: &str) -> Value {
-        json!({"status": status, "fields": {}})
+        // Real completed-run shape: computer_exec sets exit_code on every run.
+        json!({"status": status, "fields": {"exit_code": "0"}})
     }
 
     #[test]
@@ -438,6 +442,20 @@ mod tests {
         );
     }
 
+    // F20: exit-1 implement run lands as status Succeeded (computer_exec
+    // RunSucceeded carries exit_code) — must Fail, not advance to extract.
+    #[test]
+    fn succeeded_step_with_nonzero_exit_fails() {
+        let crashed_agent = json!({"status": "Succeeded",
+            "fields": {"exit_code": "1", "stderr_tail": "agent crashed"}});
+        match decide_tick(Some(&exec("Succeeded")), Some(&crashed_agent), None, 1).unwrap() {
+            TickDecision::Fail(reason) => {
+                assert!(reason.contains("exit 1"), "{reason}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
     #[test]
     fn chain_advances_step_by_step() {
         assert_eq!(
@@ -457,10 +475,10 @@ mod tests {
     #[test]
     fn failed_step_fails_task_with_evidence() {
         let failed = json!({"status":"Failed","fields":{"error":"boom"}});
-        assert_eq!(
-            decide_tick(Some(&failed), None, None, 1).unwrap(),
-            TickDecision::Fail("boom".into())
-        );
+        match decide_tick(Some(&failed), None, None, 1).unwrap() {
+            TickDecision::Fail(reason) => assert!(reason.contains("boom"), "{reason}"),
+            other => panic!("expected Fail, got {other:?}"),
+        }
     }
 
     #[test]
@@ -527,6 +545,28 @@ mod tests {
         assert_eq!(
             branch_name("en-01a0aa9c-fba4-7b63", 2, "", "abc123"),
             "darkfactory/en01a0aa9cfba47b-r2"
+        );
+    }
+}
+
+// F21: the planner shares /work/repo and pre-commits the pristine base, so
+// the implementer's base commit is an idempotency no-op in the normal path
+// ("nothing to commit" exit 1). The checkout command must treat
+// already-committed as success — commit only when there are staged changes.
+#[cfg(test)]
+mod f21_tests {
+    use super::checkout_command;
+
+    #[test]
+    fn checkout_command_tolerates_already_committed_base() {
+        let cmd = checkout_command();
+        assert!(
+            cmd.contains("git diff --cached --quiet"),
+            "checkout command must skip the commit when the base is already committed: {cmd}"
+        );
+        assert!(
+            !cmd.contains("commit -qm base\n"),
+            "unconditional commit would exit 1 on the shared-workdir no-op: {cmd}"
         );
     }
 }

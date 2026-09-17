@@ -261,6 +261,35 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// True when the exec completed AND its command exited 0. computer_exec
+/// reports RunSucceeded (Exec status "Succeeded") even when the command
+/// itself exits non-zero — `fields.exit_code` is the real outcome signal
+/// (ADR-0067 F20: deciding on status alone let failing validations pass).
+pub fn exec_succeeded(exec: &Value) -> bool {
+    exec.get("status").and_then(|v| v.as_str()) == Some("Succeeded")
+        && exec.pointer("/fields/exit_code").and_then(|v| v.as_str()) == Some("0")
+}
+
+/// Short human-facing evidence for a failed exec: exit code + output tails.
+pub fn exec_failure_summary(exec: &Value) -> String {
+    let fields = exec.get("fields").cloned().unwrap_or_else(|| json!({}));
+    let get = |k: &str| fields.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let mut parts = vec![format!("exit {}", {
+        let c = get("exit_code");
+        if c.is_empty() { "?" } else { c }
+    })];
+    if !get("error").is_empty() {
+        parts.push(truncate(get("error"), 200));
+    }
+    if !get("stderr_tail").is_empty() {
+        parts.push(format!("stderr: {}", truncate(get("stderr_tail"), 200)));
+    }
+    if !get("stdout_tail").is_empty() {
+        parts.push(format!("stdout: {}", truncate(get("stdout_tail"), 200)));
+    }
+    parts.join(" | ")
+}
+
 // ---------------------------------------------------------------------------
 // GitHub (D5): modules hold the token; Computers never see it.
 // ---------------------------------------------------------------------------
@@ -439,6 +468,33 @@ pub fn create_and_run_exec(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // F20: exec outcome = status Succeeded AND exit_code "0" — status
+    // alone is not enough (computer_exec reports RunSucceeded for exit 1).
+    #[test]
+    fn exec_succeeded_requires_zero_exit_code() {
+        let ok = json!({"status": "Succeeded", "fields": {"exit_code": "0"}});
+        let nonzero = json!({"status": "Succeeded", "fields": {"exit_code": "1"}});
+        let missing = json!({"status": "Succeeded", "fields": {}});
+        let running = json!({"status": "Running", "fields": {}});
+        let failed = json!({"status": "Failed", "fields": {}});
+        assert!(exec_succeeded(&ok));
+        assert!(!exec_succeeded(&nonzero), "exit 1 must not count as success");
+        assert!(!exec_succeeded(&missing), "missing exit_code fails closed");
+        assert!(!exec_succeeded(&running));
+        assert!(!exec_succeeded(&failed));
+    }
+
+    #[test]
+    fn exec_failure_summary_carries_exit_and_tails() {
+        let exec = json!({"status": "Succeeded", "fields": {
+            "exit_code": "1", "stderr_tail": "boom", "stdout_tail": "running 3 tests"
+        }});
+        let summary = exec_failure_summary(&exec);
+        assert!(summary.contains("exit 1"), "got: {summary}");
+        assert!(summary.contains("boom"), "got: {summary}");
+        assert!(summary.contains("running 3 tests"), "got: {summary}");
+    }
 
     #[test]
     fn github_repo_slug_parses_common_forms() {

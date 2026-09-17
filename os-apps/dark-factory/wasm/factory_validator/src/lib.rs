@@ -63,17 +63,24 @@ fn decide_tick(
     }
     match exec {
         None => Ok(TickDecision::StartExec),
-        Some(e) => match exec_phase_status(e) {
-            "Succeeded" => Ok(TickDecision::Passed),
-            "Failed" => {
-                if repair_round >= max_repair_rounds {
-                    Ok(TickDecision::Fail)
-                } else {
-                    Ok(TickDecision::Repair)
-                }
+        Some(e) => {
+            // F20: status Succeeded is not enough — computer_exec reports
+            // RunSucceeded even for non-zero exits; exit_code is the real
+            // outcome signal.
+            if factory_common::exec_succeeded(e) {
+                return Ok(TickDecision::Passed);
             }
-            _ => Ok(TickDecision::Wait),
-        },
+            match exec_phase_status(e) {
+                "Succeeded" | "Failed" => {
+                    if repair_round >= max_repair_rounds {
+                        Ok(TickDecision::Fail)
+                    } else {
+                        Ok(TickDecision::Repair)
+                    }
+                }
+                _ => Ok(TickDecision::Wait),
+            }
+        }
     }
 }
 
@@ -125,9 +132,16 @@ fn failure_evidence(exec: &Value) -> String {
         .pointer("/fields/stdout_tail")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    // F22: name the failing gate — silent commands (test -f, grep -q)
+    // leave empty tails and the agent cannot guess what to satisfy.
+    let command = exec
+        .pointer("/fields/command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     factory_common::truncate(
         &format!(
-            "validation tests failed (exit {exit_code})\nstderr:\n{}\nstdout:\n{}",
+            "validation tests failed (exit {exit_code})\ncommand: {}\nstderr:\n{}\nstdout:\n{}",
+            command.trim(),
             stderr.trim(),
             stdout.trim()
         ),
@@ -354,9 +368,33 @@ mod tests {
 
     #[test]
     fn succeeded_exec_passes() {
+        // Real shape: computer_exec sets exit_code on every completed run.
+        let exec = json!({"status": "Succeeded", "fields": {"exit_code": "0"}});
         assert_eq!(
-            decide_tick(Some(&exec_with("Succeeded")), 3, 0, 6).unwrap(),
+            decide_tick(Some(&exec), 3, 0, 6).unwrap(),
             TickDecision::Passed
+        );
+    }
+
+    // F20: a command that exits non-zero still lands as Exec status
+    // "Succeeded" (computer_exec RunSucceeded carries exit_code) — the
+    // validator must gate on exit_code, not status alone (TID18 merged a
+    // PR whose validation and observation both exited 1).
+    #[test]
+    fn succeeded_exec_with_nonzero_exit_repairs_within_budget() {
+        let exec = json!({"status": "Succeeded", "fields": {"exit_code": "1"}});
+        assert_eq!(
+            decide_tick(Some(&exec), 3, 2, 6).unwrap(),
+            TickDecision::Repair
+        );
+    }
+
+    #[test]
+    fn succeeded_exec_with_nonzero_exit_fails_at_budget() {
+        let exec = json!({"status": "Succeeded", "fields": {"exit_code": "127"}});
+        assert_eq!(
+            decide_tick(Some(&exec), 3, 6, 6).unwrap(),
+            TickDecision::Fail
         );
     }
 
@@ -417,5 +455,29 @@ mod tests {
         assert!(ev.contains("exit 1"));
         assert!(ev.contains("boom"));
         assert!(ev.contains("running 3 tests"));
+    }
+}
+
+// F22: repair context must name the failing gate. Live e2e: a silent gate
+// (`test -f gb-e2e.txt`, no output) produced "validation tests failed
+// (exit 1)\nstderr:\n\nstdout:" — the agent burned three repair rounds
+// guessing. Include the failing command in the evidence.
+#[cfg(test)]
+mod f22_tests {
+    use serde_json::json;
+
+    #[test]
+    fn failure_evidence_includes_the_failing_command() {
+        let exec = json!({
+            "fields": {
+                "exit_code": "1",
+                "command": "cd /work/repo && test -f gb-e2e.txt",
+                "stderr_tail": "",
+                "stdout_tail": ""
+            }
+        });
+        let evidence = super::failure_evidence(&exec);
+        assert!(evidence.contains("exit 1"), "{evidence}");
+        assert!(evidence.contains("test -f gb-e2e.txt"), "{evidence}");
     }
 }

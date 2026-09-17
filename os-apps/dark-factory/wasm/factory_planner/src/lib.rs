@@ -102,11 +102,18 @@ fn decide_tick(
     ] {
         match exec {
             None => return start,
-            Some(e) => match exec_status(e) {
-                "Succeeded" => continue,
-                "Failed" => return TickDecision::Fail(exec_error(e)),
-                _ => return TickDecision::Wait,
-            },
+            Some(e) => {
+                // F20: gate on exit_code, not status alone (see validator).
+                if factory_common::exec_succeeded(e) {
+                    continue;
+                }
+                match exec_status(e) {
+                    "Succeeded" | "Failed" => {
+                        return TickDecision::Fail(factory_common::exec_failure_summary(e));
+                    }
+                    _ => return TickDecision::Wait,
+                }
+            }
         }
     }
     TickDecision::Submit
@@ -116,16 +123,11 @@ fn exec_status(exec: &Value) -> &str {
     exec.get("status").and_then(|v| v.as_str()).unwrap_or("")
 }
 
-fn exec_error(exec: &Value) -> String {
-    exec.pointer("/fields/error")
-        .and_then(|v| v.as_str())
-        .unwrap_or("exec failed")
-        .to_string()
-}
-
 fn checkout_command() -> String {
+    // F21: treat an already-committed base as success (idempotency no-op)
+    // now that exit codes gate step outcomes (F20).
     format!(
-        "set -eu; mkdir -p {REPO_WORKDIR}; cd {REPO_WORKDIR}; git init -q; git add -A; git -c user.email=factory@temper.local -c user.name=dark-factory commit -q -m 'dark-factory checkout'"
+        "set -eu; mkdir -p {REPO_WORKDIR}; cd {REPO_WORKDIR}; git init -q; git add -A; {{ git diff --cached --quiet || git -c user.email=factory@temper.local -c user.name=dark-factory commit -q -m 'dark-factory checkout'; }}"
     )
 }
 
@@ -543,7 +545,8 @@ mod tests {
     use super::*;
 
     fn exec(id: &str, status: &str) -> Value {
-        json!({"entity_id": id, "status": status})
+        // Real completed-run shape: computer_exec sets exit_code on every run.
+        json!({"entity_id": id, "status": status, "fields": {"exit_code": "0"}})
     }
 
     #[test]
@@ -588,6 +591,21 @@ mod tests {
         );
     }
 
+    // F20: exit-1 checkout lands as status Succeeded (computer_exec
+    // RunSucceeded carries exit_code) — must Fail, not advance to plan.
+    #[test]
+    fn succeeded_step_with_nonzero_exit_fails() {
+        let failed_checkout = json!({"entity_id": "e1", "status": "Succeeded",
+            "fields": {"exit_code": "1", "stderr_tail": "fatal: repository not found"}});
+        match decide_tick(true, None, Some(&failed_checkout), None, 0) {
+            TickDecision::Fail(reason) => {
+                assert!(reason.contains("exit 1"), "{reason}");
+                assert!(reason.contains("repository not found"), "{reason}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
     #[test]
     fn failed_step_fails_task_with_evidence() {
         let failed = json!({"entity_id": "e2", "status": "Failed", "fields": {"error": "boom"}});
@@ -625,5 +643,22 @@ mod tests {
         assert!(p.contains("too broad, narrow step 2"), "{p}");
         let p2 = plan_prompt("do the thing", "");
         assert!(!p2.contains("rejected the previous plan"), "{p2}");
+    }
+}
+
+// F21: with exit-code-gated step outcomes (F20), the base commit must be an
+// idempotency no-op when the pristine base is already committed in the
+// shared workdir — commit only when there are staged changes.
+#[cfg(test)]
+mod f21_tests {
+    use super::checkout_command;
+
+    #[test]
+    fn checkout_command_tolerates_already_committed_base() {
+        let cmd = checkout_command();
+        assert!(
+            cmd.contains("git diff --cached --quiet"),
+            "checkout command must skip the commit when the base is already committed: {cmd}"
+        );
     }
 }
