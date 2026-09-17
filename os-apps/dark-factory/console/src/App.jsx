@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ensureSession, openFactoryEventStream } from "./api.js";
-import { STAGES, toTaskView, toTaskList, toActivityEvents, latestPatch, gateDecision, shortId, stageIndex, toProvisioningSteps, shouldRefreshForEvent, pinnedProfileSummary } from "./view-model.js";
+import { STAGES, toTaskView, toTaskList, toActivityEvents, latestPatch, gateDecision, shortId, stageIndex, toProvisioningSteps, shouldRefreshForEvent, pinnedProfileSummary, manualMergeBanner } from "./view-model.js";
 
 const STATUS_COPY = {
   Requested: "Your request is queued for the factory.",
@@ -66,6 +66,7 @@ function Sidebar({ tasks, selectedId, onSelect, onNewTask, online, userEmail }) 
 
 function StageRail({ task }) {
   const activeIndex = stageIndex(task.Status);
+  const mergeBanner = manualMergeBanner(task.fields ?? {}, task.Status);
   return (
     <section className="stage-card" aria-label="Factory progress">
       <div className="stage-header">
@@ -80,6 +81,14 @@ function StageRail({ task }) {
       <p className="status-description">{STATUS_COPY[task.Status] ?? "Temper is processing this task."}</p>
       {pinnedProfileSummary(task.fields ?? {}) && (
         <p className="profile-pin">{pinnedProfileSummary(task.fields ?? {})}</p>
+      )}
+      {mergeBanner && (
+        <p className="merge-banner">
+          ⚠ Manual merge — the factory did not merge this PR. Merge it on GitHub:{" "}
+          <a href={mergeBanner} target="_blank" rel="noreferrer">
+            {mergeBanner}
+          </a>
+        </p>
       )}
       <div className="stage-rail">
         {STAGES.map(([state, label], index) => {

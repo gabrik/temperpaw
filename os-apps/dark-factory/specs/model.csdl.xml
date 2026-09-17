@@ -28,6 +28,7 @@
         <Property Name="pull_request_url" Type="Edm.String" Nullable="true" />
         <Property Name="merge_sha" Type="Edm.String" Nullable="true" />
         <Property Name="merge_commit_sha" Type="Edm.String" Nullable="true" />
+        <Property Name="merge_disposition" Type="Edm.String" Nullable="true" />
         <Property Name="observation_summary" Type="Edm.String" Nullable="true" />
         <Property Name="operation_key" Type="Edm.String" Nullable="true" />
         <Property Name="operation_owner" Type="Edm.String" Nullable="true" />
@@ -293,6 +294,7 @@
         <Property Name="checkout_mode" Type="Edm.String" Nullable="true" />
         <Property Name="publish_mode" Type="Edm.String" Nullable="true" />
         <Property Name="publish_credential_ref" Type="Edm.String" Nullable="true" />
+        <Property Name="merge_mode" Type="Edm.String" Nullable="true" />
         <Property Name="validation_commands" Type="Edm.String" Nullable="true" />
         <Property Name="build_commands" Type="Edm.String" Nullable="true" />
         <Property Name="deploy_commands" Type="Edm.String" Nullable="true" />
@@ -321,6 +323,7 @@
           <Parameter Name="checkout_mode" Type="Edm.String" />
           <Parameter Name="publish_mode" Type="Edm.String" />
           <Parameter Name="publish_credential_ref" Type="Edm.String" />
+          <Parameter Name="merge_mode" Type="Edm.String" />
           <Parameter Name="validation_commands" Type="Edm.String" />
           <Parameter Name="build_commands" Type="Edm.String" />
           <Parameter Name="deploy_commands" Type="Edm.String" />
@@ -348,6 +351,7 @@
           <Parameter Name="checkout_mode" Type="Edm.String" />
           <Parameter Name="publish_mode" Type="Edm.String" />
           <Parameter Name="publish_credential_ref" Type="Edm.String" />
+          <Parameter Name="merge_mode" Type="Edm.String" />
           <Parameter Name="validation_commands" Type="Edm.String" />
           <Parameter Name="build_commands" Type="Edm.String" />
           <Parameter Name="deploy_commands" Type="Edm.String" />

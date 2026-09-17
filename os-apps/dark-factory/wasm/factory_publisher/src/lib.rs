@@ -528,6 +528,18 @@ fn run_finalize_tick(
 
     // ADR-0069: profile from the pinned snapshot (or legacy FactoryConfig).
     let cfg = factory_common::load_profile(ctx, ctx.entity_state.get("fields").unwrap(), ctx.entity_state.get("fields").unwrap())?;
+
+    // ADR-0070: manual merge authority leaves the PR unmerged and completes
+    // the task with a handoff marker; a human merges on GitHub.
+    if merge_mode_is_manual(&cfg) {
+        ctx.log(
+            "info",
+            &format!("factory_publisher: task {task_id} merge_mode=manual — leaving {pull_request_url} unmerged for a human"),
+        );
+        set_success_result("ManualMergeHandoff", &handoff_params(operation_key, operation_owner));
+        return Ok(());
+    }
+
     let repo_url = field_or(&cfg, "repo_url", "");
     let slug = factory_common::github_repo_slug(&repo_url)?;
     let pr_number = pr_number_from_url(pull_request_url)?;
@@ -611,6 +623,23 @@ fn run_finalize_tick(
         }
     }
     Ok(())
+}
+
+/// ADR-0070: merge authority comes from the pinned profile. Only "manual"
+/// diverts from auto-merge; absent (legacy FactoryConfig) means auto.
+fn merge_mode_is_manual(cfg: &Value) -> bool {
+    field_or(cfg, "merge_mode", "auto") == "manual"
+}
+
+/// ManualMergeHandoff params (ADR-0070): record that the PR was deliberately
+/// left unmerged for a human. Terminal — no fresh key is minted.
+fn handoff_params(expected_operation_key: &str, expected_operation_owner: &str) -> Value {
+    json!({
+        "merge_disposition": "manual",
+        "operation_result": "manual merge: PR left unmerged for a human (ADR-0070)",
+        "expected_operation_key": expected_operation_key,
+        "expected_operation_owner": expected_operation_owner,
+    })
 }
 
 /// MergeFinalized params (FinalizingMerge phase): the real merge commit
@@ -701,6 +730,28 @@ mod tests {
         assert_eq!(p["expected_operation_key"], "key-f");
         assert_eq!(p["expected_operation_owner"], "owner-f");
         // Terminal: no fresh operation key is minted past Completed.
+        assert!(p.get("operation_key").is_none());
+        assert!(p.get("phase_ticks").is_none());
+    }
+
+    #[test]
+    fn merge_mode_defaults_to_auto_unless_profile_says_manual() {
+        // ADR-0070: absent (legacy FactoryConfig) or "auto" → factory merges.
+        assert!(!merge_mode_is_manual(&json!({})));
+        assert!(!merge_mode_is_manual(&json!({"merge_mode": "auto"})));
+        assert!(!merge_mode_is_manual(&json!({"merge_mode": ""})));
+        assert!(merge_mode_is_manual(&json!({"merge_mode": "manual"})));
+    }
+
+    #[test]
+    fn handoff_params_carry_disposition_and_fences_only() {
+        let p = handoff_params("key-h", "owner-h");
+        assert_eq!(p["merge_disposition"], "manual");
+        assert!(p["operation_result"].as_str().unwrap().contains("manual"));
+        assert_eq!(p["expected_operation_key"], "key-h");
+        assert_eq!(p["expected_operation_owner"], "owner-h");
+        // Handoff: no merge SHA exists; terminal — no fresh key is minted.
+        assert!(p.get("merge_commit_sha").is_none());
         assert!(p.get("operation_key").is_none());
         assert!(p.get("phase_ticks").is_none());
     }

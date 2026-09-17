@@ -91,6 +91,15 @@ name = "publish_credential_ref"
 type = "string"
 initial = ""
 
+# ADR-0070: merge authority after observation passes.
+# "auto"   — factory_publisher merges the reviewed PR on GitHub (default).
+# "manual" — the task completes with merge_disposition=manual and the
+#            console directs the operator to merge the PR themselves.
+[[state]]
+name = "merge_mode"
+type = "string"
+initial = "auto"
+
 # -- Command contract (CommandSpec JSON arrays) ---------------------------------
 
 [[state]]
@@ -209,6 +218,7 @@ params = [
   "checkout_mode",
   "publish_mode",
   "publish_credential_ref",
+  "merge_mode",
   "validation_commands",
   "build_commands",
   "deploy_commands",
@@ -246,6 +256,7 @@ params = [
   "checkout_mode",
   "publish_mode",
   "publish_credential_ref",
+  "merge_mode",
   "validation_commands",
   "build_commands",
   "deploy_commands",

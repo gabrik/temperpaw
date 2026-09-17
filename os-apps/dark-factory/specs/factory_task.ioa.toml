@@ -171,6 +171,14 @@ name = "merge_commit_sha"
 type = "string"
 initial = ""
 
+# ADR-0070: "manual" when the profile's merge_mode handed the reviewed PR to
+# a human (ManualMergeHandoff); empty when the factory merged (or the task
+# never reached FinalizingMerge). The console surfaces the manual handoff.
+[[state]]
+name = "merge_disposition"
+type = "string"
+initial = ""
+
 [[state]]
 name = "observation_summary"
 type = "string"
@@ -824,6 +832,41 @@ effect = [{ type = "trigger", name = "factory_janitor" }]
 [[action.constraints]]
 kind = "param_nonempty"
 param = "merge_commit_sha"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_key"
+field = "operation_key"
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_operation_owner"
+field = "operation_owner"
+
+[[action.triggers]]
+name = "factory_janitor"
+kind = "wasm"
+module = "factory_janitor"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+# ADR-0070: manual merge authority — the factory leaves the reviewed PR
+# unmerged and completes; a human merges it on GitHub. Same fences and
+# janitor lifecycle as MergeFinalized, but no merge SHA exists.
+[[action]]
+name = "ManualMergeHandoff"
+kind = "input"
+from = ["FinalizingMerge"]
+to = "Completed"
+params = [
+  "merge_disposition",
+  "operation_result",
+  "expected_operation_key",
+  "expected_operation_owner",
+]
+hint = "Complete without merging (merge_mode=manual): the console tells the operator to merge the PR on GitHub."
+effect = [{ type = "trigger", name = "factory_janitor" }]
 
 [[action.constraints]]
 kind = "param_equals_field"

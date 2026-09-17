@@ -70,6 +70,7 @@ REPO_PARAMS = [
     "checkout_mode",
     "publish_mode",
     "publish_credential_ref",
+    "merge_mode",
     "validation_commands",
     "build_commands",
     "deploy_commands",

@@ -32,6 +32,7 @@
     "checkout_mode": "clone",
     "publish_mode": "github",
     "publish_credential_ref": "",
+    "merge_mode": "auto",
     "validation_commands": "[{\"argv\":[\"cargo\",\"test\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":600}]",
     "build_commands": "[{\"argv\":[\"cargo\",\"build\"],\"cwd\":\"/work/repo\",\"timeout_seconds\":600}]",
     "deploy_commands": "[]",

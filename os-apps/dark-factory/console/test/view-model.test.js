@@ -17,6 +17,7 @@ import {
   shortId,
   stageIndex,
   pinnedProfileSummary,
+  manualMergeBanner,
   formatPiEventLine,
   renderExecStream,
   formatActivityLabel,
@@ -54,6 +55,8 @@ test("toTaskView flattens entity row shape", () => {
   assert.equal(task.head_sha, taskRow.fields.head_sha);
   assert.equal(task.pull_request_url, taskRow.fields.pull_request_url);
   assert.equal(task.branch_name, taskRow.fields.branch_name);
+  // StageRail consumers (profile pin, manual-merge banner) read task.fields.
+  assert.deepEqual(task.fields, taskRow.fields);
 });
 
 test("toTaskView tolerates fields-only shape (Id/Status inside fields)", () => {
@@ -206,6 +209,17 @@ test("pinnedProfileSummary renders revision + short digest from task fields", ()
   // No pin → null (legacy FactoryConfig tasks).
   assert.equal(pinnedProfileSummary({ repo_profile_digest: "" }), null);
   assert.equal(pinnedProfileSummary({}), null);
+});
+
+test("manualMergeBanner surfaces the PR link only for manual handoffs (ADR-0070)", () => {
+  const url = "https://github.com/o/r/pull/9";
+  assert.equal(manualMergeBanner({ merge_disposition: "manual", pull_request_url: url }, "Completed"), url);
+  // Factory-merged or pre-terminal tasks show nothing.
+  assert.equal(manualMergeBanner({ merge_disposition: "", pull_request_url: url }, "Completed"), null);
+  assert.equal(manualMergeBanner({ pull_request_url: url }, "Completed"), null);
+  assert.equal(manualMergeBanner({ merge_disposition: "manual", pull_request_url: url }, "FinalizingMerge"), null);
+  // No PR link → nothing to point the operator at.
+  assert.equal(manualMergeBanner({ merge_disposition: "manual" }, "Completed"), null);
 });
 
 test("shortId strips the en- prefix noise for display", () => {

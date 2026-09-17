@@ -641,6 +641,7 @@ pub fn build_profile_snapshot(repo: &Value, policy: &Value, revision: &str, dige
         "base_branch": or(r("base_branch"), "main"),
         "checkout_mode": or(r("checkout_mode"), "api"),
         "publish_mode": or(r("publish_mode"), "local"),
+        "merge_mode": or(r("merge_mode"), "auto"),
         "validation_commands": or(r("validation_commands"), "[]"),
         "build_commands": or(r("build_commands"), "[]"),
         "deploy_commands": or(r("deploy_commands"), "[]"),
@@ -729,7 +730,7 @@ pub fn factory_context_env(
 // itself, created_by, updated_by) are excluded.
 // ---------------------------------------------------------------------------
 
-pub const REPO_PROFILE_PARAM_KEYS: [&str; 21] = [
+pub const REPO_PROFILE_PARAM_KEYS: [&str; 22] = [
     "display_name",
     "description",
     "team_id",
@@ -739,6 +740,7 @@ pub const REPO_PROFILE_PARAM_KEYS: [&str; 21] = [
     "checkout_mode",
     "publish_mode",
     "publish_credential_ref",
+    "merge_mode",
     "validation_commands",
     "build_commands",
     "deploy_commands",
@@ -987,6 +989,7 @@ mod tests {
             "base_branch": "main",
             "checkout_mode": "github",
             "publish_mode": "github",
+            "merge_mode": "manual",
             "validation_commands": "[{\"argv\":[\"cargo\",\"test\"],\"cwd\":\"/work/repo\"}]",
             "deploy_commands": "[]",
             "observation_commands": "[{\"argv\":[\"cargo\",\"test\",\"--release\"],\"cwd\":\"/work/repo\"}]",
@@ -1012,6 +1015,7 @@ mod tests {
         assert_eq!(snap["max_repair_rounds"], "4");
         assert_eq!(snap["profile_revision"], "3");
         assert_eq!(snap["profile_digest"], "sha256:x");
+        assert_eq!(snap["merge_mode"], "manual");
         assert!(snap["validation_commands"].as_str().unwrap().contains("cargo"));
         assert!(snap["deploy_commands"].as_str().unwrap().starts_with('['));
         assert_eq!(snap["build_commands"], "[]");
@@ -1029,6 +1033,7 @@ mod tests {
         assert_eq!(snap["base_branch"], "main");
         assert_eq!(snap["checkout_mode"], "api");
         assert_eq!(snap["publish_mode"], "local");
+        assert_eq!(snap["merge_mode"], "auto");
         assert_eq!(snap["max_repair_rounds"], "6");
         assert_eq!(snap["computer_provider"], "tensorlake");
     }
@@ -1101,6 +1106,21 @@ mod tests {
         assert!(!payload.contains("\": "), "got: {payload}");
         // Deterministic across calls.
         assert_eq!(payload, repo_profile_digest_payload(&fields));
+    }
+
+    #[test]
+    fn repo_profile_digest_payload_includes_merge_mode() {
+        // ADR-0070: merge authority is part of the profile contract, so it
+        // is pinned and digest-covered like every other param key.
+        assert!(REPO_PROFILE_PARAM_KEYS.contains(&"merge_mode"));
+        assert_eq!(REPO_PROFILE_PARAM_KEYS.len(), 22);
+        let fields = json!({
+            "git_url": "https://github.com/o/r",
+            "merge_mode": "manual",
+            "profile_revision": "1"
+        });
+        let payload = repo_profile_digest_payload(&fields);
+        assert!(payload.contains("\"merge_mode\":\"manual\""), "got: {payload}");
     }
 
     #[test]

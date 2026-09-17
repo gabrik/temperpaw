@@ -37,6 +37,15 @@ export function pinnedProfileSummary(fields = {}) {
   return `profile rev ${revision} · ${hex}`;
 }
 
+// ADR-0070: manual merge authority — the factory completed without merging;
+// return the PR URL so the detail header can point the operator at GitHub.
+export function manualMergeBanner(fields = {}, status = "") {
+  if (status !== "Completed") return null;
+  if (String(fields.merge_disposition ?? "") !== "manual") return null;
+  const url = String(fields.pull_request_url ?? "");
+  return url || null;
+}
+
 export function stageIndex(status) {
   return STAGES.findIndex(([state]) => state === status);
 }
@@ -68,6 +77,8 @@ export function toTaskView(row = {}) {
     Status: fields.Status ?? row.status ?? "",
     repair_round: Number(row.counters?.repair_round ?? 0),
     phase_ticks: Number(row.counters?.phase_ticks ?? 0),
+    // Raw fields for StageRail consumers (profile pin, manual-merge banner).
+    fields,
   };
   for (const name of TASK_FIELDS) view[name] = fields[name] ?? "";
   return view;

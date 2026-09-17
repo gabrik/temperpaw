@@ -169,6 +169,8 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .stage-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .stage-header h2 { margin: 0; font-size: 23px; letter-spacing: -0.035em; }
 .status-description { margin: 9px 0 24px; color: var(--muted); font-size: 12px; }
+.merge-banner { margin: -12px 0 18px; font-size: 12px; color: var(--warning); }
+.merge-banner a { color: inherit; }
 .status-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 100px; background: rgba(255, 255, 255, 0.025); color: var(--muted); padding: 7px 11px; font-size: 10px; font-weight: 700; }
 .status-pill .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--violet); box-shadow: 0 0 0 4px rgba(159, 122, 234, 0.1); }
 .status-pill.completed .pulse { background: var(--accent); }
