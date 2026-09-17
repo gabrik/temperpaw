@@ -19,73 +19,13 @@ Every box below is a `FactoryTask` state; every arrow is a spec action. Logic
 lives in WASM **effects** wired on the re-check ticks — one module per phase —
 and everything an effect executes runs inside the task's sandboxed Computer:
 
-```mermaid
-stateDiagram-v2
-    [*] --> Requested : task submitted (console / API)
-    Requested --> Planning : StartPlanning
+![FactoryTask lifecycle — one WASM effect module per transition, all execution inside the task's sandboxed Computer, two human gates, the merge_mode branch, and janitor-terminated sandboxes](factory-task-lifecycle.png)
 
-    Planning --> AwaitingPlanApproval : plan artifact ready
-    note right of Planning
-        effect: factory_planner
-        · provisions the Computer (sandbox) on the first tick
-        · pins the FactoryRepo profile (revision + digest)
-        · runs pi in the sandbox to draft the plan
-    end note
+Diagram source: [`factory-task-lifecycle.mmd`](factory-task-lifecycle.mmd).
+After editing it, re-render the PNG (checked in alongside):
 
-    AwaitingPlanApproval --> Implementing : GATE 1 · human approves plan
-    note right of Implementing
-        effect: factory_implementer
-        · pi edits code in the sandbox and commits
-    end note
-
-    Implementing --> Validating : patch committed
-    Validating --> Implementing : gate failed → repair loop
-    Validating --> PublishingPR : build + validation pass
-    note right of Validating
-        effect: factory_validator
-        · runs build_commands && validation_commands
-          (CommandSpec argv arrays) in the sandbox
-        · failures loop back to Implementing
-          (repair_round ≤ max_repair_rounds)
-    end note
-
-    PublishingPR --> AwaitingMergeApproval : PR opened
-    note right of PublishingPR
-        effect: factory_publisher
-        · pushes the branch and opens the PR (GitHub)
-    end note
-
-    AwaitingMergeApproval --> Deploying : GATE 2 · human approves head SHA
-    Deploying --> Observing : deploy_commands pass
-    note right of Deploying
-        effect: factory_deployer
-        · runs deploy_commands ([] = explicit passthrough)
-    end note
-
-    Observing --> Implementing : observation failed → repair loop
-    Observing --> FinalizingMerge : observation passed
-    note right of Observing
-        effect: factory_validator
-        · runs observation_commands against the approved head
-    end note
-
-    FinalizingMerge --> Completed : auto · PR merged / manual · handoff banner
-    note right of FinalizingMerge
-        effect: factory_publisher
-        · merge_mode=auto → merges the PR (GitHub)
-        · merge_mode=manual → no merge call; the console shows
-          a banner telling the human to merge (ADR-0070)
-    end note
-
-    state "Failed (from any state, with failure_reason)" as Failed
-    Completed --> [*]
-    Failed --> [*]
-    note left of Failed
-        sandbox lifecycle: the Computer is provisioned at the first
-        Planning tick, hosts every agent run and CommandSpec exec,
-        and is terminated by the factory_janitor effect when the task
-        reaches a terminal state (Completed / Failed / Expired)
-    end note
+```bash
+npx -y @mermaid-js/mermaid-cli -i factory-task-lifecycle.mmd -o factory-task-lifecycle.png -t default -b white -s 2
 ```
 
 The audit test holds: you can reconstruct any run from entity state
